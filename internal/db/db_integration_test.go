@@ -6,38 +6,14 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/SpandanDhru/yorm/internal/db/dbtest"
 )
 
 var tables = []string{"sessions", "events", "snapshots", "members"}
-
-func startPostgres(t *testing.T) string {
-	t.Helper()
-	ctx := context.Background()
-	pg, err := postgres.Run(ctx, "postgres:16-alpine",
-		postgres.WithDatabase("yorm"),
-		postgres.WithUsername("yorm"),
-		postgres.WithPassword("yorm"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).WithStartupTimeout(time.Minute)),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = pg.Terminate(context.Background()) })
-	url, err := pg.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return url
-}
 
 func tableExists(t *testing.T, pool *pgxpool.Pool, name string) bool {
 	t.Helper()
@@ -50,7 +26,7 @@ func tableExists(t *testing.T, pool *pgxpool.Pool, name string) bool {
 
 func TestMigrateUpDownUp(t *testing.T) {
 	ctx := context.Background()
-	url := startPostgres(t)
+	url := dbtest.StartPostgres(t)
 
 	if err := Migrate(ctx, url); err != nil {
 		t.Fatal(err)
@@ -87,7 +63,7 @@ func TestMigrateUpDownUp(t *testing.T) {
 // writer for the same sequence number.
 func TestDuplicateSeqIsRejected(t *testing.T) {
 	ctx := context.Background()
-	url := startPostgres(t)
+	url := dbtest.StartPostgres(t)
 	if err := Migrate(ctx, url); err != nil {
 		t.Fatal(err)
 	}

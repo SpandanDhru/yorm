@@ -1,7 +1,7 @@
 // Command yormd is the Yorm server.
 //
 //	yormd                 run the server (see internal/config for env vars)
-//	yormd mint-token ...  print a join token; a dev stand-in until the REST API exists
+//	yormd mint-token ...  print a join token for an existing session, for debugging
 package main
 
 import (
@@ -21,6 +21,8 @@ import (
 	"github.com/SpandanDhru/yorm/internal/config"
 	"github.com/SpandanDhru/yorm/internal/db"
 	"github.com/SpandanDhru/yorm/internal/httpapi"
+	"github.com/SpandanDhru/yorm/internal/session"
+	"github.com/SpandanDhru/yorm/internal/store"
 	"github.com/SpandanDhru/yorm/internal/ws"
 )
 
@@ -60,13 +62,21 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(cfg.UploadDir, 0o750); err != nil {
+		return fmt.Errorf("upload dir: %w", err)
+	}
+	st := store.New(pool)
+	sessions := session.NewManager(st, log, session.DefaultOptions())
 	opts := ws.DefaultOptions()
 	opts.OriginPatterns = cfg.AllowedOrigins
-	wsSrv := ws.NewServer(signer, log, opts)
+	wsSrv := ws.NewServer(signer, sessions, log, opts)
 
 	srv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           httpapi.NewRouter(httpapi.Deps{Log: log, WS: wsSrv, Health: pool.Ping}),
+		Addr: cfg.Addr,
+		Handler: httpapi.NewRouter(httpapi.Deps{
+			Log: log, WS: wsSrv, Health: pool.Ping, Signer: signer, Store: st, Sessions: sessions,
+			UploadDir: cfg.UploadDir, WebDir: cfg.WebDir,
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errc := make(chan error, 1)
@@ -83,7 +93,8 @@ func run(log *slog.Logger) error {
 	log.Info("shutting down")
 	sctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
-	return errors.Join(srv.Shutdown(sctx), wsSrv.Shutdown(sctx))
+	// Clients first, so none is left talking to a stopped session actor.
+	return errors.Join(srv.Shutdown(sctx), wsSrv.Shutdown(sctx), sessions.Shutdown(sctx))
 }
 
 func mintToken(args []string, out io.Writer) error {

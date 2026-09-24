@@ -6,6 +6,7 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -14,6 +15,8 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/SpandanDhru/yorm/internal/auth"
+	"github.com/SpandanDhru/yorm/internal/game"
+	"github.com/SpandanDhru/yorm/internal/session"
 )
 
 type Options struct {
@@ -35,10 +38,17 @@ func DefaultOptions() Options {
 	}
 }
 
+// Close codes in the private range, for the client to act on.
+const (
+	// StatusSessionNotFound tells the client to stop reconnecting.
+	StatusSessionNotFound websocket.StatusCode = 4404
+)
+
 type Server struct {
-	signer *auth.Signer
-	log    *slog.Logger
-	opts   Options
+	signer   *auth.Signer
+	sessions *session.Manager
+	log      *slog.Logger
+	opts     Options
 
 	mu     sync.Mutex
 	conns  map[*conn]struct{}
@@ -46,8 +56,8 @@ type Server struct {
 	wg     sync.WaitGroup // one per Serve call that is past the closed check
 }
 
-func NewServer(signer *auth.Signer, log *slog.Logger, opts Options) *Server {
-	return &Server{signer: signer, log: log, opts: opts, conns: make(map[*conn]struct{})}
+func NewServer(signer *auth.Signer, sessions *session.Manager, log *slog.Logger, opts Options) *Server {
+	return &Server{signer: signer, sessions: sessions, log: log, opts: opts, conns: make(map[*conn]struct{})}
 }
 
 // Serve handles GET /ws/sessions/{id}?token=... for sessionID and returns
@@ -99,26 +109,76 @@ func (s *Server) run(c *conn) {
 	go func() { defer wg.Done(); c.pingLoop(s.opts.PingInterval, s.opts.MaxMissedPings) }()
 
 	c.enqueue(welcome(c.claims))
-	err := c.readLoop(s.handleMessage)
+	err := s.play(c)
 	c.fail(websocket.StatusNormalClosure, "")
 	wg.Wait()
 
 	code, reason := c.closeReason()
-	log.Info("client disconnected", "code", code, "reason", reason, "read_err", err)
+	log.Info("client disconnected", "code", code, "reason", reason, "err", err)
 }
 
-// handleMessage is the milestone 0 echo handler: it answers ping with pong
-// and echoes everything else. Milestone 1 replaces it with routing to the
-// session actor.
-func (s *Server) handleMessage(c *conn, msg []byte) {
-	var env struct {
-		Type string `json:"type"`
+// play joins the client to its session and routes its messages there until
+// the connection ends.
+func (s *Server) play(c *conn) error {
+	ctx, cancel := context.WithTimeout(c.ctx, s.opts.WriteTimeout)
+	seat, err := s.sessions.Join(ctx, c.claims.Session, game.UserID(c.claims.User), c.claims.Role,
+		c.enqueue, func(reason string) { c.fail(websocket.StatusServiceRestart, reason) })
+	cancel()
+	if errors.Is(err, session.ErrNotFound) {
+		c.fail(StatusSessionNotFound, "session not found")
+		return err
 	}
-	if json.Unmarshal(msg, &env) == nil && env.Type == "ping" {
-		c.enqueue(pongMsg)
+	if err != nil {
+		c.fail(websocket.StatusInternalError, "could not join session")
+		return err
+	}
+	defer seat.Leave()
+	return c.readLoop(func(c *conn, msg []byte) { s.handleMessage(c, seat, msg) })
+}
+
+// clientMsg is any client-to-server message.
+type clientMsg struct {
+	Type string          `json:"type"` // ping, sync, or command
+	ID   string          `json:"id"`
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args"`
+}
+
+const maxCommandIDLen = 64
+
+func (s *Server) handleMessage(c *conn, seat *session.Handle, msg []byte) {
+	var m clientMsg
+	if err := json.Unmarshal(msg, &m); err != nil {
+		c.enqueue(errorMsg("malformed message"))
 		return
 	}
-	c.enqueue(msg)
+	var err error
+	switch m.Type {
+	case "ping":
+		c.enqueue(pongMsg)
+	case "sync":
+		err = seat.Sync(c.ctx)
+	case "command":
+		if m.ID == "" || len(m.ID) > maxCommandIDLen {
+			c.enqueue(errorMsg("command id must be 1 to 64 characters"))
+			return
+		}
+		err = seat.Submit(c.ctx, game.Command{ID: m.ID, Name: m.Name, Args: m.Args})
+	default:
+		c.enqueue(errorMsg("unknown message type " + m.Type))
+	}
+	if err != nil {
+		// The session actor stopped; reconnecting starts a fresh one.
+		c.fail(websocket.StatusServiceRestart, "session restarting")
+	}
+}
+
+func errorMsg(message string) []byte {
+	b, _ := json.Marshal(struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}{"error", message})
+	return b
 }
 
 var pongMsg = []byte(`{"type":"pong"}`)

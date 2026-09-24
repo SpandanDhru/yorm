@@ -15,6 +15,8 @@ type Config struct {
 	DatabaseURL     string   // DATABASE_URL, required
 	TokenSecret     []byte   // YORM_TOKEN_SECRET, required, at least 32 bytes
 	AllowedOrigins  []string // YORM_ALLOWED_ORIGINS, comma-separated WebSocket origin patterns, e.g. "localhost:5173"
+	UploadDir       string   // YORM_UPLOAD_DIR, default "data/uploads"
+	WebDir          string   // YORM_WEB_DIR, built frontend to serve; unset in development, where Vite serves it
 	ShutdownTimeout time.Duration
 }
 
@@ -23,10 +25,15 @@ func Load(getenv func(string) string) (Config, error) {
 	c := Config{
 		Addr:            getenv("YORM_ADDR"),
 		DatabaseURL:     getenv("DATABASE_URL"),
+		UploadDir:       getenv("YORM_UPLOAD_DIR"),
+		WebDir:          getenv("YORM_WEB_DIR"),
 		ShutdownTimeout: 10 * time.Second,
 	}
 	if c.Addr == "" {
 		c.Addr = ":8080"
+	}
+	if c.UploadDir == "" {
+		c.UploadDir = "data/uploads"
 	}
 	if c.DatabaseURL == "" {
 		return Config{}, errors.New("config: DATABASE_URL is required")

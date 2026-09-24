@@ -17,6 +17,9 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/SpandanDhru/yorm/internal/auth"
+	"github.com/SpandanDhru/yorm/internal/session"
+	"github.com/SpandanDhru/yorm/internal/session/sessiontest"
+	"github.com/SpandanDhru/yorm/internal/store"
 )
 
 func TestMain(m *testing.M) {
@@ -26,6 +29,7 @@ func TestMain(m *testing.M) {
 type harness struct {
 	t      *testing.T
 	srv    *Server
+	store  *sessiontest.MemStore
 	http   *httptest.Server
 	signer *auth.Signer
 }
@@ -36,7 +40,10 @@ func newHarness(t *testing.T, opts Options) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(signer, slog.New(slog.NewTextHandler(io.Discard, nil)), opts)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st := sessiontest.NewMemStore("ses_1")
+	mgr := session.NewManager(st, log, session.DefaultOptions())
+	srv := NewServer(signer, mgr, log, opts)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ws/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		srv.Serve(w, r, r.PathValue("id"))
@@ -48,9 +55,12 @@ func newHarness(t *testing.T, opts Options) *harness {
 		if err := srv.Shutdown(ctx); err != nil {
 			t.Errorf("shutdown: %v", err)
 		}
+		if err := mgr.Shutdown(ctx); err != nil {
+			t.Errorf("manager shutdown: %v", err)
+		}
 		hs.Close()
 	})
-	return &harness{t: t, srv: srv, http: hs, signer: signer}
+	return &harness{t: t, srv: srv, store: st, http: hs, signer: signer}
 }
 
 func (h *harness) token(session, user string, role auth.Role) string {
@@ -112,7 +122,33 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-func TestWelcomeThenEcho(t *testing.T) {
+func writeJSON(t *testing.T, c *websocket.Conn, msg string) {
+	t.Helper()
+	if err := c.Write(testCtx(t), websocket.MessageText, []byte(msg)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// serverMsg is any server-to-client message, decoded loosely.
+type serverMsg struct {
+	Type    string          `json:"type"`
+	ID      string          `json:"id"`
+	Seq     int64           `json:"seq"`
+	Name    string          `json:"name"`
+	Code    string          `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data"`
+	State   json.RawMessage `json:"state"`
+}
+
+func readMsg(t *testing.T, c *websocket.Conn) serverMsg {
+	t.Helper()
+	var m serverMsg
+	readJSON(t, c, &m)
+	return m
+}
+
+func TestWelcomeThenSnapshotOnSync(t *testing.T) {
 	h := newHarness(t, DefaultOptions())
 	c, w := h.connect("ses_1", "usr_dm", auth.RoleDM)
 
@@ -123,17 +159,78 @@ func TestWelcomeThenEcho(t *testing.T) {
 		t.Fatalf("DM caps missing session:admin: %v", w.Caps)
 	}
 
-	ctx := testCtx(t)
-	msg := []byte(`{"type":"hello","n":1}`)
-	if err := c.Write(ctx, websocket.MessageText, msg); err != nil {
-		t.Fatal(err)
+	writeJSON(t, c, `{"type":"sync"}`)
+	m := readMsg(t, c)
+	if m.Type != "snapshot" || m.Seq != 1 || !strings.Contains(string(m.State), `"usr_dm"`) {
+		t.Fatalf("got %+v, want snapshot at seq 1 including the DM", m)
 	}
-	_, got, err := c.Read(ctx)
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestCommandsReachTheSessionAndEveryClient(t *testing.T) {
+	h := newHarness(t, DefaultOptions())
+	dm, _ := h.connect("ses_1", "usr_dm", auth.RoleDM)
+	kai, _ := h.connect("ses_1", "usr_kai", auth.RolePlayer)
+	if m := readMsg(t, dm); m.Name != "MemberJoined" {
+		t.Fatalf("DM got %+v, want kai's MemberJoined", m)
 	}
-	if string(got) != string(msg) {
-		t.Fatalf("echo = %s, want %s", got, msg)
+
+	writeJSON(t, dm, `{"type":"command","id":"c1","name":"set_map","args":{"image_url":"/uploads/m.png","cols":8,"rows":8}}`)
+	for _, c := range []*websocket.Conn{dm, kai} {
+		if m := readMsg(t, c); m.Type != "event" || m.Name != "MapSet" {
+			t.Fatalf("got %+v, want MapSet event", m)
+		}
+	}
+	if m := readMsg(t, dm); m.Type != "ack" || m.ID != "c1" {
+		t.Fatalf("got %+v, want ack c1", m)
+	}
+
+	writeJSON(t, kai, `{"type":"command","id":"c2","name":"place_token","args":{"label":"X","at":{"x":0,"y":0}}}`)
+	if m := readMsg(t, kai); m.Type != "reject" || m.ID != "c2" || m.Code != "forbidden" {
+		t.Fatalf("got %+v, want forbidden reject for c2", m)
+	}
+}
+
+func TestBadMessagesGetErrors(t *testing.T) {
+	h := newHarness(t, DefaultOptions())
+	c, _ := h.connect("ses_1", "usr_kai", auth.RolePlayer)
+	for _, msg := range []string{
+		`not json`,
+		`{"type":"dance"}`,
+		`{"type":"command","name":"move_token"}`,
+		`{"type":"command","id":"` + strings.Repeat("x", 65) + `","name":"move_token"}`,
+	} {
+		writeJSON(t, c, msg)
+		if m := readMsg(t, c); m.Type != "error" {
+			t.Fatalf("%s: got %+v, want error", msg, m)
+		}
+	}
+}
+
+func TestUnknownSessionClosesWith4404(t *testing.T) {
+	h := newHarness(t, DefaultOptions())
+	c, w := h.connect("ses_gone", "usr_kai", auth.RolePlayer)
+	if w.Type != "welcome" {
+		t.Fatalf("got %+v", w)
+	}
+	_, _, err := c.Read(testCtx(t))
+	if got := websocket.CloseStatus(err); got != StatusSessionNotFound {
+		t.Fatalf("close status = %v (err %v), want 4404", got, err)
+	}
+}
+
+// When the session actor stops (here: it lost a write race), its clients
+// are closed with 1012 so they reconnect to a fresh actor.
+func TestStoppedSessionClosesWith1012(t *testing.T) {
+	h := newHarness(t, DefaultOptions())
+	c, _ := h.connect("ses_1", "usr_dm", auth.RoleDM)
+	h.store.FailNextAppend(store.ErrConflict)
+	writeJSON(t, c, `{"type":"command","id":"c1","name":"set_map","args":{"image_url":"/uploads/m.png","cols":8,"rows":8}}`)
+	if m := readMsg(t, c); m.Type != "reject" || m.Code != "unavailable" {
+		t.Fatalf("got %+v, want unavailable reject", m)
+	}
+	_, _, err := c.Read(testCtx(t))
+	if got := websocket.CloseStatus(err); got != websocket.StatusServiceRestart {
+		t.Fatalf("close status = %v (err %v), want 1012", got, err)
 	}
 }
 
@@ -276,8 +373,12 @@ func TestShutdownClosesClientsAndRefusesNewOnes(t *testing.T) {
 	for _, u := range []string{"usr_dm", "usr_kai", "usr_ana"} {
 		c, _ := h.connect("ses_1", u, auth.RolePlayer)
 		go func() {
-			_, _, err := c.Read(context.Background())
-			errs <- err
+			for {
+				if _, _, err := c.Read(context.Background()); err != nil {
+					errs <- err
+					return
+				}
+			}
 		}()
 	}
 

@@ -3,4 +3,5 @@
 *.test
 coverage.out
 .env
+/data/
 testdata/fuzz/

@@ -23,9 +23,12 @@ services:
       YORM_ALLOWED_ORIGINS: localhost:5173
     ports:
       - "8080:8080"
+    volumes:
+      - uploads:/data
     depends_on:
       postgres:
         condition: service_healthy
 
 volumes:
   pgdata:
+  uploads:
