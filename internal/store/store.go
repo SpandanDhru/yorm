@@ -130,6 +130,7 @@ func (p *Postgres) Load(ctx context.Context, sessionID string) ([]game.Event, er
 		if err := rows.Scan(&ev.Seq, &ev.Name, &ev.By, &ev.Cause, &data, &ev.At); err != nil {
 			return nil, fmt.Errorf("store: load: %w", err)
 		}
+		ev.At = ev.At.UTC() // pgx returns local time; events are UTC everywhere else
 		if ev.Data, err = game.DecodePayload(ev.Name, data); err != nil {
 			return nil, fmt.Errorf("store: load seq %d: %w", ev.Seq, err)
 		}

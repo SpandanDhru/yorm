@@ -36,6 +36,7 @@ type State struct {
 	Actors    map[ActorID]*Character `json:"actors"` // PCs, NPCs, and monsters
 	Members   map[UserID]*Member     `json:"members"`
 	Encounter *Encounter             `json:"encounter"` // nil outside combat
+	Rolls     []Roll                 `json:"rolls"`     // the most recent MaxRolls, oldest first
 }
 
 // Settings are the session's house rules.
@@ -184,6 +185,7 @@ func NewState(id string) *State {
 		Tokens:   map[TokenID]*Token{},
 		Actors:   map[ActorID]*Character{},
 		Members:  map[UserID]*Member{},
+		Rolls:    []Roll{},
 	}
 }
 
@@ -217,6 +219,11 @@ func (s *State) Apply(ev Event) {
 		}
 	case SettingsChanged:
 		s.Settings = d.Settings
+	case DiceRolled:
+		s.Rolls = append(s.Rolls, Roll{Seq: ev.Seq, By: ev.By, At: ev.At, DiceRolled: d})
+		if len(s.Rolls) > MaxRolls {
+			s.Rolls = slices.Clone(s.Rolls[len(s.Rolls)-MaxRolls:])
+		}
 	case TokenPlaced:
 		t := d.Token
 		s.Tokens[t.ID] = &t

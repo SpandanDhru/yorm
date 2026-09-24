@@ -13,6 +13,7 @@ const base: GameState = {
   actors: {},
   members: {},
   encounter: null,
+  rolls: [],
 };
 
 function ev(seq: number, e: Omit<GameEvent, "seq" | "by" | "at">): GameEvent {
@@ -158,5 +159,23 @@ describe("combat", () => {
     expect(s.encounter?.reaction_used).toEqual({});
     s = applyEvent(s, ev(11, { name: "CombatEnded", data: {} }));
     expect(s.encounter).toBeNull();
+  });
+});
+
+describe("log", () => {
+  const roll = (seq: number) => ev(seq, { name: "DiceRolled", data: { expr: "1d20", result: { terms: null, total: 12 }, physical: true } });
+
+  it("keeps the latest 50 rolls", () => {
+    let s = base;
+    for (let i = 4; i < 60; i++) s = applyEvent(s, roll(i));
+    expect(s.rolls).toHaveLength(50);
+    expect(s.rolls[0]).toMatchObject({ seq: 10, by: "usr_dm", expr: "1d20", physical: true });
+  });
+
+  it("adds feed lines for notable events", () => {
+    let s = withGame();
+    s = reducer(s, { type: "event", event: moved(4) });
+    s = reducer(s, { type: "event", event: ev(5, { name: "CombatStarted", data: { order: [] } }) });
+    expect(s.feed).toEqual([{ seq: 5, text: "Combat started: roll initiative" }]);
   });
 });

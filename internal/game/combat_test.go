@@ -8,8 +8,8 @@ import (
 
 func ptr[T any](v T) *T { return &v }
 
-// dice returns an Env whose rolls come from faces in order.
-func dice(t *testing.T, faces ...int) Env {
+// rolls returns an Env whose dice show faces, in order.
+func rolls(t *testing.T, faces ...int) Env {
 	return Env{
 		NewID: testEnv.NewID,
 		Roll: func(sides int) int {
@@ -94,7 +94,7 @@ func TestStartCombatWaitsForPhysicalRolls(t *testing.T) {
 
 	// Participants sorted by ID: act_ana, act_gob, act_kai. Each gets a
 	// tie-break roll; Ana rolls her own die, so only the others roll d20s.
-	evs := play(t, s, dice(t, 5, 3, 14, 7, 10), dm, "start_combat", ``)
+	evs := play(t, s, rolls(t, 5, 3, 14, 7, 10), dm, "start_combat", ``)
 	if len(evs) != 1 {
 		t.Fatalf("turns began while Ana's roll is missing: %+v", evs)
 	}
@@ -132,7 +132,7 @@ func TestStartCombatWaitsForPhysicalRolls(t *testing.T) {
 func TestStartCombatWithNoPhysicalRollsBeginsAtOnce(t *testing.T) {
 	s := arena()
 	// Kai: tie-break 1, d20 18 (+3 = 21). Goblin: tie-break 2, d20 11 (+2 = 13).
-	evs := play(t, s, dice(t, 1, 18, 2, 11), dm, "start_combat", `{"actors":["act_kai","act_gob"]}`)
+	evs := play(t, s, rolls(t, 1, 18, 2, 11), dm, "start_combat", `{"actors":["act_kai","act_gob"]}`)
 	if len(evs) != 2 || evs[1] != (TurnStarted{Actor: kaiPC, Round: 1, Movement: 30}) {
 		t.Fatalf("events = %+v, want CombatStarted then Kai's turn (18+3 beats 11+2)", evs)
 	}
@@ -144,9 +144,9 @@ func TestStartCombatWithNoPhysicalRollsBeginsAtOnce(t *testing.T) {
 
 func TestBeginCombatRollsForTheMissing(t *testing.T) {
 	s := arena()
-	play(t, s, dice(t, 5, 3, 14, 7, 10), dm, "start_combat", ``)
+	play(t, s, rolls(t, 5, 3, 14, 7, 10), dm, "start_combat", ``)
 	refuse(t, s, testEnv, kai, "begin_combat", ``, CodeForbidden)
-	evs := play(t, s, dice(t, 2), dm, "begin_combat", ``)
+	evs := play(t, s, rolls(t, 2), dm, "begin_combat", ``)
 	if len(evs) != 2 || evs[0].(InitiativeSet).Physical || evs[0].(InitiativeSet).Total != 3 {
 		t.Fatalf("events = %+v", evs)
 	}
@@ -159,8 +159,8 @@ func TestBeginCombatRollsForTheMissing(t *testing.T) {
 // fight starts combat with the order goblin (16), Kai (13), Ana (4).
 func fight(t *testing.T) *State {
 	s := arena()
-	play(t, s, dice(t, 5, 3, 14, 7, 10, 3), dm, "start_combat", ``)
-	play(t, s, dice(t, 3), dm, "begin_combat", ``)
+	play(t, s, rolls(t, 5, 3, 14, 7, 10, 3), dm, "start_combat", ``)
+	play(t, s, rolls(t, 3), dm, "begin_combat", ``)
 	return s
 }
 
@@ -287,7 +287,7 @@ func TestCombatantsComeAndGo(t *testing.T) {
 	s.Actors["act_wolf"] = &Character{ID: "act_wolf", Name: "Wolf", Speed: 40, InitBonus: 2, Conditions: []Condition{}, Controllers: []UserID{kai}}
 
 	refuse(t, s, testEnv, kai, "join_combat", `{"actor":"act_wolf"}`, CodeForbidden)
-	play(t, s, dice(t, 1, 12), dm, "join_combat", `{"actor":"act_wolf"}`) // 12+2 = 14: after the goblin, before Kai
+	play(t, s, rolls(t, 1, 12), dm, "join_combat", `{"actor":"act_wolf"}`) // 12+2 = 14: after the goblin, before Kai
 	if got := order(s); !reflect.DeepEqual(got, []ActorID{goblin, "act_wolf", kaiPC, "act_ana"}) {
 		t.Fatalf("order = %v", got)
 	}
@@ -320,7 +320,7 @@ func TestCombatantsComeAndGo(t *testing.T) {
 // Deleting the last character we were waiting on starts the first turn.
 func TestDeletingTheLastWaitingCombatantStartsTurns(t *testing.T) {
 	s := arena()
-	play(t, s, dice(t, 5, 3, 14, 7, 10), dm, "start_combat", ``)
+	play(t, s, rolls(t, 5, 3, 14, 7, 10), dm, "start_combat", ``)
 	evs := play(t, s, testEnv, dm, "delete_character", `{"actor":"act_ana"}`)
 	if last := evs[len(evs)-1]; last != (TurnStarted{Actor: goblin, Round: 1, Movement: 30}) {
 		t.Fatalf("events = %+v", evs)

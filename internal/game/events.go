@@ -144,6 +144,7 @@ var payloads = map[string]func([]byte) (Payload, error){
 	"MovementSpent":    decode[MovementSpent],
 	"ActionUsed":       decode[ActionUsed],
 	"CombatEnded":      decode[CombatEnded],
+	"DiceRolled":       decode[DiceRolled],
 }
 
 func decode[T Payload](data []byte) (Payload, error) {

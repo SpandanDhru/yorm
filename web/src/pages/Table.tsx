@@ -146,7 +146,7 @@ function TableView({ seat }: { seat: Seat }) {
         onMove={move}
         onPaint={paint}
       />
-      {table.game && <Sidebar seat={seat} game={table.game} selected={selectedToken} command={command} />}
+      {table.game && <Sidebar seat={seat} game={table.game} feed={table.feed} selected={selectedToken} command={command} />}
       {notice && (
         <div className="toast" role="status">
           {notice}

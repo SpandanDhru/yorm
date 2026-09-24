@@ -177,7 +177,9 @@ func (a *actor) reply(m cmdMsg, r Result, msg []byte) {
 // applied or sent unless the append succeeded, so every client sees exactly
 // what is in the log.
 func (a *actor) commit(by game.UserID, cause string, payloads ...game.Payload) error {
-	at := a.now().UTC()
+	// Postgres keeps microseconds, so do the same here: replayed state must
+	// match live state exactly, and events carry this time into it.
+	at := a.now().UTC().Truncate(time.Microsecond)
 	evs := make([]game.Event, len(payloads))
 	for i, p := range payloads {
 		evs[i] = game.Event{Seq: a.state.Seq + int64(i) + 1, Name: p.EventName(), By: by, Cause: cause, At: at, Data: p}

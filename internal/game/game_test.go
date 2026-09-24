@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SpandanDhru/yorm/internal/auth"
+	"github.com/SpandanDhru/yorm/internal/dice"
 )
 
 const (
@@ -255,6 +256,10 @@ func TestPayloadRoundTrip(t *testing.T) {
 		MovementSpent{Actor: "a", Feet: 15, Left: 15},
 		ActionUsed{Actor: "a", Kind: ActionMain, Used: true, Dash: true, MovementLeft: 45},
 		CombatEnded{},
+		DiceRolled{Expr: "2d20kh1+5", Label: "longsword", Result: dice.Result{Total: 21, Terms: []dice.TermResult{
+			{Term: dice.Term{Count: 2, Sides: 20, Keep: 1}, Faces: []int{7, 16}, Dropped: []bool{true, false}, Value: 16},
+			{Term: dice.Term{Const: 5}, Value: 5},
+		}}},
 	}
 	if len(all) != len(payloads) {
 		t.Fatalf("test covers %d payloads, registry has %d", len(all), len(payloads))
@@ -341,6 +346,9 @@ func TestReplayMatchesLiveState(t *testing.T) {
 		}
 	}
 	run(cmd(dm, "prev_turn", `{}`))
+	run(cmd(kai, "roll_dice", `{"text":"2d20kh1+5 longsword"}`))
+	run(cmd(kai, "roll_dice", `{"text":"2d6+3 = 4 5 damage"}`))
+	run(cmd(dm, "roll_dice", `{"text":"1d20+2 = 9"}`))
 
 	replayed := NewState("ses_1")
 	for _, ev := range log {

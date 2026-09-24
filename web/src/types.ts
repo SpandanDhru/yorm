@@ -104,6 +104,31 @@ export interface Encounter {
 
 export type ActionKind = "action" | "bonus" | "reaction";
 
+export interface TermResult {
+  neg?: boolean;
+  count?: number; // absent for a constant
+  sides?: number;
+  keep?: number;
+  low?: boolean;
+  const?: number;
+  faces?: number[];
+  dropped?: boolean[];
+  value: number;
+}
+
+export interface DiceRolled {
+  expr: string;
+  label?: string;
+  result: { terms: TermResult[] | null; total: number };
+  physical: boolean;
+}
+
+export interface Roll extends DiceRolled {
+  seq: number;
+  by: UserID;
+  at: string;
+}
+
 export interface GameState {
   id: string;
   seq: number;
@@ -113,6 +138,7 @@ export interface GameState {
   actors: Record<ActorID, Character>;
   members: Record<UserID, Member>;
   encounter: Encounter | null;
+  rolls: Roll[];
 }
 
 interface EventBase {
@@ -151,6 +177,7 @@ export type GameEvent = EventBase &
         data: { actor: ActorID; kind: ActionKind; used: boolean; dash?: boolean; movement_left: number };
       }
     | { name: "CombatEnded"; data: Record<string, never> }
+    | { name: "DiceRolled"; data: DiceRolled }
   );
 
 export type ServerMsg =

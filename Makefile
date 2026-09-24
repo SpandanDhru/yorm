@@ -45,6 +45,7 @@ integration:
 
 fuzz:
 	go test -run=^$$ -fuzz=FuzzVerify -fuzztime=30s ./internal/auth
+	go test -run=^$$ -fuzz=FuzzParseLine -fuzztime=30s ./internal/dice
 
 lint:
 	golangci-lint run

@@ -21,6 +21,7 @@ export interface PendingMove {
 
 export interface TableState {
   game: GameState | null;
+  feed: FeedLine[];
   // Optimistic moves by command ID. A token is drawn at its pending
   // position until the server's event or reject settles the command.
   pending: Record<string, PendingMove>;
@@ -28,7 +29,7 @@ export interface TableState {
   stale: boolean;
 }
 
-export const initialTable: TableState = { game: null, pending: {}, stale: false };
+export const initialTable: TableState = { game: null, feed: [], pending: {}, stale: false };
 
 export type Action =
   | { type: "snapshot"; state: GameState }
@@ -139,6 +140,9 @@ export function applyEvent(s: GameState, ev: GameEvent): GameState {
     case "CombatEnded":
       next.encounter = null;
       break;
+    case "DiceRolled":
+      next.rolls = [...s.rolls, { ...ev.data, seq: ev.seq, by: ev.by, at: ev.at }].slice(-MAX_ROLLS);
+      break;
     case "HPChanged":
       next.actors = updateActor(s, ev.data.actor, (a) => ({ ...a, hp: ev.data.hp }));
       break;
@@ -153,6 +157,44 @@ export function applyEvent(s: GameState, ev: GameEvent): GameState {
       break;
   }
   return next;
+}
+
+const MAX_ROLLS = 50; // game.MaxRolls
+
+// FeedLine is a log line about something that happened, built from events
+// as they arrive. Unlike rolls, the feed isn't in the snapshot, so it only
+// covers what this browser has seen since it loaded.
+export interface FeedLine {
+  seq: number;
+  text: string;
+}
+
+const MAX_FEED = 100;
+
+// describe turns an event into a feed line, or null if it isn't worth one.
+export function describe(g: GameState, ev: GameEvent): string | null {
+  const name = (id: string) => g.actors[id]?.name ?? "someone";
+  switch (ev.name) {
+    case "CombatStarted":
+      return "Combat started: roll initiative";
+    case "CombatEnded":
+      return "Combat ended";
+    case "TurnStarted":
+      return `Round ${ev.data.round} · ${name(ev.data.actor)}'s turn`;
+    case "InitiativeSet":
+      return ev.data.physical ? `${name(ev.data.actor)} rolled ${ev.data.total} for initiative 🎲` : null;
+    case "HPChanged": {
+      const d = ev.data.delta;
+      if (d < 0) return `${name(ev.data.actor)} took ${-d} damage (${ev.data.hp.current}/${ev.data.hp.max})`;
+      if (d > 0) return `${name(ev.data.actor)} healed ${d} (${ev.data.hp.current}/${ev.data.hp.max})`;
+      return `${name(ev.data.actor)} has ${ev.data.hp.temp} temp HP`;
+    }
+    case "ConditionAdded":
+      return `${name(ev.data.actor)} is ${ev.data.condition.name}`;
+    case "ConditionRemoved":
+      return `${name(ev.data.actor)} is no longer ${ev.data.name}`;
+  }
+  return null;
 }
 
 const NO_ECONOMY = { movement_left: 0, action: false, bonus: false, action_dash: false, bonus_dash: false };
@@ -231,7 +273,9 @@ export function reducer(s: TableState, a: Action): TableState {
       if (!g || s.stale) return s; // waiting for a snapshot
       if (a.event.seq <= g.seq) return s; // already applied
       if (a.event.seq > g.seq + 1) return { ...s, stale: true }; // missed some
-      return { ...s, game: applyEvent(g, a.event), pending: without(s.pending, a.event.cause) };
+      const line = describe(g, a.event);
+      const feed = line ? [...s.feed, { seq: a.event.seq, text: line }].slice(-MAX_FEED) : s.feed;
+      return { ...s, game: applyEvent(g, a.event), feed, pending: without(s.pending, a.event.cause) };
     }
     case "move":
       return { ...s, pending: { ...s.pending, [a.id]: a.move } };

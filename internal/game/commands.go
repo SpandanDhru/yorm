@@ -72,6 +72,8 @@ var deciders = map[string]decider{
 	"prev_turn":          decidePrevTurn,
 	"use_action":         decideUseAction,
 	"end_combat":         decideEndCombat,
+
+	"roll_dice": decideRollDice,
 }
 
 // Decide validates cmd against s and returns the events it produces. The

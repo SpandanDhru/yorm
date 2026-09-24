@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/png"
 	"io"
@@ -169,22 +170,7 @@ func (c *client) snapshot() *game.State {
 // uploads a map, a player joins by invite, tokens placed and dragged show
 // up live for both, and a restarted server comes back with the same state.
 func TestSharedGrid(t *testing.T) {
-	ctx := context.Background()
-	dbURL := dbtest.StartPostgres(t)
-	if err := db.Migrate(ctx, dbURL); err != nil {
-		t.Fatal(err)
-	}
-	pool, err := db.Open(ctx, dbURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	st := store.New(pool)
-	signer, err := auth.NewSigner([]byte(strings.Repeat("k", auth.MinKeyLen)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	uploads := t.TempDir()
+	st, signer, uploads := newStack(t)
 	srv := startServer(t, st, signer, uploads)
 
 	// REST: create, join, upload a map before anyone is connected.
@@ -248,6 +234,27 @@ func TestSharedGrid(t *testing.T) {
 	}
 }
 
+// newStack starts Postgres and returns what a server needs besides itself,
+// so a test can stop one server and start another on the same database.
+func newStack(t *testing.T) (*store.Postgres, *auth.Signer, string) {
+	t.Helper()
+	ctx := context.Background()
+	dbURL := dbtest.StartPostgres(t)
+	if err := db.Migrate(ctx, dbURL); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := db.Open(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	signer, err := auth.NewSigner([]byte(strings.Repeat("k", auth.MinKeyLen)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store.New(pool), signer, t.TempDir()
+}
+
 func uploadMap(t *testing.T, url, token string) {
 	t.Helper()
 	var img bytes.Buffer
@@ -272,5 +279,200 @@ func uploadMap(t *testing.T, url, token string) {
 	if resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("upload: %d %s", resp.StatusCode, b)
+	}
+}
+
+// do sends a command and returns the events it caused, after its ack.
+// Every client in others must see the same events.
+func (c *client) do(name string, args any, others ...*client) []msg {
+	c.t.Helper()
+	id := fmt.Sprintf("c%d", time.Now().UnixNano())
+	c.command(id, name, args)
+	var evs []msg
+	for {
+		m := c.read()
+		switch m.Type {
+		case "event":
+			evs = append(evs, m)
+			continue
+		case "ack":
+			if m.ID != id {
+				c.t.Fatalf("ack for %s, want %s", m.ID, id)
+			}
+		default:
+			c.t.Fatalf("%s: got %+v", name, m)
+		}
+		break
+	}
+	for _, o := range others {
+		for _, want := range evs {
+			if got := o.read(); got.Type != "event" || got.Seq != want.Seq || got.Name != want.Name {
+				c.t.Fatalf("other client got %+v, want %s at seq %d", got, want.Name, want.Seq)
+			}
+		}
+	}
+	return evs
+}
+
+func (c *client) refused(name string, args any, code string) {
+	c.t.Helper()
+	c.command("r", name, args)
+	if m := c.read(); m.Type != "reject" || m.Code != code {
+		c.t.Fatalf("%s: got %+v, want reject %s", name, m, code)
+	}
+}
+
+func names(evs []msg) []string {
+	var n []string
+	for _, e := range evs {
+		n = append(n, e.Name)
+	}
+	return n
+}
+
+func data[T any](t *testing.T, m msg) T {
+	t.Helper()
+	var v T
+	if err := json.Unmarshal(m.Data, &v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// TestCombat is milestone 2's "done when", scripted: two players and a
+// goblin fight through a round on a map with a wall, using physical and
+// server dice, and a restart loses nothing.
+func TestCombat(t *testing.T) {
+	st, signer, uploads := newStack(t)
+	srv := startServer(t, st, signer, uploads)
+	base := srv.http.URL + "/api/sessions"
+
+	dmSeat := postJSON[joinResp](t, base, `{"name":"Goblin ambush"}`)
+	sid := dmSeat.Session
+	join := func(name string) joinResp {
+		return postJSON[joinResp](t, base+"/"+sid+"/join", `{"code":"`+dmSeat.InviteCode+`","display_name":"`+name+`"}`)
+	}
+	kaiSeat, anaSeat := join("Kai"), join("Ana")
+
+	dm := connect(t, srv, sid, dmSeat.Token)
+	dm.snapshot()
+	kai := connect(t, srv, sid, kaiSeat.Token)
+	dm.expect("event", "MemberJoined")
+	kai.snapshot()
+	ana := connect(t, srv, sid, anaSeat.Token)
+	dm.expect("event", "MemberJoined")
+	kai.expect("event", "MemberJoined")
+	ana.snapshot()
+	all := []*client{dm, kai, ana}
+	others := func(c *client) []*client {
+		var o []*client
+		for _, x := range all {
+			if x != c {
+				o = append(o, x)
+			}
+		}
+		return o
+	}
+
+	// A blank 10x6 map with a wall down column 5, open at the bottom row.
+	dm.do("set_map", map[string]any{"cols": 10, "rows": 6}, kai, ana)
+	dm.do("paint_cells", map[string]any{"terrain": "wall", "rect": map[string]any{"from": map[string]int{"x": 5, "y": 0}, "to": map[string]int{"x": 5, "y": 4}}}, kai, ana)
+
+	// Characters: each player makes their own PC; Ana rolls real dice.
+	// Initiative ranges don't overlap where the test needs an order:
+	// Kai 12 to 31 and Ana's entered 21 both beat the goblin's -9 to 10.
+	kaiPC := data[game.CharacterCreated](t, kai.do("create_character", map[string]any{"name": "Kai", "max_hp": 24, "init_bonus": 11, "speed": 30}, others(kai)...)[0]).Character
+	anaPC := data[game.CharacterCreated](t, ana.do("create_character", map[string]any{"name": "Ana", "max_hp": 18, "init_bonus": 1, "speed": 25, "rolls_own_dice": true}, others(ana)...)[0]).Character
+	gob := data[game.CharacterCreated](t, dm.do("create_character", map[string]any{"name": "Goblin", "max_hp": 7, "ac": 15, "init_bonus": -10}, kai, ana)[0]).Character
+	for i, c := range []game.Character{kaiPC, anaPC, gob} {
+		dm.do("place_token", map[string]any{"actor": c.ID, "at": map[string]int{"x": i, "y": 0}}, kai, ana)
+	}
+
+	// Initiative: the server rolls for Kai and the goblin; Ana enters a 20.
+	evs := dm.do("start_combat", map[string]any{}, kai, ana)
+	if got := names(evs); len(got) != 1 {
+		t.Fatalf("start_combat = %v; turns must wait for Ana's roll", got)
+	}
+	kai.refused("set_initiative", map[string]any{"actor": anaPC.ID, "roll": 20}, "forbidden")
+	evs = ana.do("set_initiative", map[string]any{"actor": anaPC.ID, "roll": 20}, dm, kai)
+	if got := names(evs); len(got) != 2 || got[1] != "TurnStarted" {
+		t.Fatalf("set_initiative = %v", got)
+	}
+	// Ana and Kai could go in either order, so the test asks whose turn it
+	// is rather than assuming.
+	enc := dm.snapshot().Encounter
+	if enc.Round != 1 || enc.Order[len(enc.Order)-1].Actor != gob.ID {
+		t.Fatalf("encounter = %+v; the goblin should be last", enc)
+	}
+	seats := map[game.ActorID]*client{kaiPC.ID: kai, anaPC.ID: ana, gob.ID: dm}
+	tokens := map[game.ActorID]string{}
+	for id, tk := range dm.snapshot().Tokens {
+		tokens[tk.Actor] = string(id)
+	}
+
+	// Each player's turn: move 10 ft, try to go through the wall's far
+	// side beyond their movement, attack with a physical roll, end turn.
+	for range 2 {
+		active := dm.snapshot().Encounter.Active
+		me := seats[active]
+		if me == dm {
+			t.Fatal("goblin went before a player")
+		}
+		other := kai
+		if me == kai {
+			other = ana
+		}
+		other.refused("move_token", map[string]any{"token": tokens[active], "to": map[string]int{"x": 3, "y": 3}}, "forbidden")
+		pos := dm.snapshot().Tokens[game.TokenID(tokens[active])].Pos
+		evs := me.do("move_token", map[string]any{"token": tokens[active], "to": map[string]int{"x": pos.X, "y": pos.Y + 2}}, others(me)...)
+		if spent := data[game.MovementSpent](t, evs[1]); spent.Feet != 10 {
+			t.Fatalf("spent %+v", spent)
+		}
+		// Across the wall is far: down to the gap and back up.
+		me.refused("move_token", map[string]any{"token": tokens[active], "to": map[string]int{"x": 9, "y": 0}}, "out_of_movement")
+		// An attack with advantage on real dice: 12 and 8, keep the 12.
+		roll := data[game.DiceRolled](t, me.do("roll_dice", map[string]any{"text": "2d20kh1+5 = 12 8 attack"}, others(me)...)[0])
+		if !roll.Physical || roll.Result.Total != 17 || roll.Label != "attack" {
+			t.Fatalf("attack roll = %+v", roll)
+		}
+		me.refused("roll_dice", map[string]any{"text": "1d20+5 = 30"}, "invalid_expression")
+		me.do("end_turn", map[string]any{}, others(me)...)
+	}
+
+	// Goblin's turn: it takes 5 of Kai's damage, the DM rolls for it, and
+	// ending its turn wraps to round 2.
+	s := dm.snapshot()
+	if s.Encounter.Active != gob.ID {
+		t.Fatalf("active = %s, want the goblin", s.Encounter.Active)
+	}
+	kai.refused("end_turn", map[string]any{}, "not_your_turn")
+	hp := data[game.HPChanged](t, kai.do("adjust_hp", map[string]any{"actor": kaiPC.ID, "delta": -5}, dm, ana)[0])
+	if hp.HP.Current != 19 {
+		t.Fatalf("Kai's HP = %+v", hp.HP)
+	}
+	rolled := data[game.DiceRolled](t, dm.do("roll_dice", map[string]any{"text": "1d6+2 scimitar"}, kai, ana)[0])
+	if rolled.Physical || rolled.Result.Total < 3 || rolled.Result.Total > 8 {
+		t.Fatalf("server roll = %+v", rolled)
+	}
+	evs = dm.do("end_turn", map[string]any{}, kai, ana)
+	if started := data[game.TurnStarted](t, evs[1]); started.Round != 2 {
+		t.Fatalf("after the goblin: %+v, want round 2", started)
+	}
+
+	// Everyone agrees, and a restarted server rebuilds the same state.
+	before := dm.snapshot()
+	for _, c := range []*client{kai, ana} {
+		if got := c.snapshot(); !reflect.DeepEqual(got, before) {
+			t.Fatalf("clients diverged:\n%+v\n%+v", before, got)
+		}
+	}
+	if len(before.Rolls) != 3 {
+		t.Fatalf("rolls = %d, want 3", len(before.Rolls))
+	}
+	srv.stop()
+	srv2 := startServer(t, st, signer, uploads)
+	after := connect(t, srv2, sid, anaSeat.Token).snapshot()
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("state after restart differs:\nbefore %+v\nafter  %+v", before, after)
 	}
 }

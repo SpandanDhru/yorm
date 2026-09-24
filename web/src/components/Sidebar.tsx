@@ -4,17 +4,20 @@ import { freeCell, tokenFor } from "../store";
 import type { GameState, MapInfo, TokenID } from "../types";
 import { CharactersPanel } from "./Characters";
 import { Initiative } from "./Initiative";
+import { LogPanel } from "./Log";
+import type { FeedLine } from "../store";
 
 interface Props {
   seat: Seat;
   game: GameState;
+  feed: FeedLine[];
   selected: TokenID | null;
   command(name: string, args: unknown): void;
 }
 
-type Tab = "characters" | "map";
+type Tab = "characters" | "log" | "map";
 
-export function Sidebar({ seat, game, selected, command }: Props) {
+export function Sidebar({ seat, game, feed, selected, command }: Props) {
   const isDM = seat.role === "dm";
   const [tab, setTab] = useState<Tab>("characters");
   const token = selected ? game.tokens[selected] : undefined;
@@ -40,16 +43,21 @@ export function Sidebar({ seat, game, selected, command }: Props) {
         </section>
       )}
 
-      {isDM && (
-        <div className="tabs" role="tablist">
-          <button role="tab" aria-selected={tab === "characters"} onClick={() => setTab("characters")}>
-            Characters
-          </button>
+      <div className="tabs" role="tablist">
+        <button role="tab" aria-selected={tab === "characters"} onClick={() => setTab("characters")}>
+          Characters
+        </button>
+        <button role="tab" aria-selected={tab === "log"} onClick={() => setTab("log")}>
+          Log
+        </button>
+        {isDM && (
           <button role="tab" aria-selected={tab === "map"} onClick={() => setTab("map")}>
-            Map &amp; tokens
+            Map
           </button>
-        </div>
-      )}
+        )}
+      </div>
+
+      {tab === "log" && <LogPanel game={game} feed={feed} command={command} />}
 
       {tab === "characters" && (
         <>

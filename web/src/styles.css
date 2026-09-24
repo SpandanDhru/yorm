@@ -543,3 +543,56 @@ button.icon {
   color: var(--muted);
   font-weight: 400;
 }
+
+.log-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 45dvh;
+  overflow-y: auto;
+}
+
+.log-lines .feed {
+  font-size: 0.85rem;
+}
+
+.roll {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.roll-result {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.roll-terms {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.roll-total {
+  margin-left: auto;
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.hint code {
+  color: var(--text);
+}
