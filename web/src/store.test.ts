@@ -7,7 +7,8 @@ const rogue: Token = { id: "tok_1", label: "Rogue", color: "#aa0000", pos: { x: 
 const base: GameState = {
   id: "ses_1",
   seq: 3,
-  map: { id: "map_1", image_url: "/uploads/m.png", cols: 10, rows: 10, cell_feet: 5 },
+  settings: { diagonal: "5" },
+  map: { id: "map_1", image_url: "/uploads/m.png", background: "#e8e0cc", cols: 10, rows: 10, cell_feet: 5, terrain: { "0,0": "wall" } },
   tokens: { tok_1: rogue },
   members: {},
 };
@@ -38,6 +39,20 @@ describe("applyEvent", () => {
     expect(s.tokens.tok_1?.pos).toEqual({ x: 5, y: 6 });
     expect(s.map?.cols).toBe(20);
     expect(base).toEqual(frozen);
+  });
+
+  it("paints and erases terrain", () => {
+    const frozen = structuredClone(base);
+    let s = applyEvent(base, ev(4, { name: "CellsPainted", data: { terrain: "water", rect: { from: { x: 2, y: 1 }, to: { x: 1, y: 0 } } } }));
+    s = applyEvent(s, ev(5, { name: "CellsPainted", data: { terrain: "clear", cells: [{ x: 0, y: 0 }, { x: 2, y: 1 }] } }));
+    s = applyEvent(s, ev(6, { name: "CellsPainted", data: { terrain: "hazard", cells: [{ x: 9, y: 9 }] } }));
+    expect(s.map?.terrain).toEqual({ "1,0": "water", "2,0": "water", "1,1": "water", "9,9": "hazard" });
+    expect(base).toEqual(frozen);
+  });
+
+  it("changes settings", () => {
+    const s = applyEvent(base, ev(4, { name: "SettingsChanged", data: { settings: { diagonal: "5-10-5" } } }));
+    expect(s.settings.diagonal).toBe("5-10-5");
   });
 });
 

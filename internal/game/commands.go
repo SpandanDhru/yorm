@@ -45,6 +45,8 @@ type decider func(s *State, cmd Command, env Env) ([]Payload, error)
 
 var deciders = map[string]decider{
 	"set_map":      decideSetMap,
+	"paint_cells":  decidePaintCells,
+	"set_settings": decideSetSettings,
 	"place_token":  decidePlaceToken,
 	"move_token":   decideMoveToken,
 	"remove_token": decideRemoveToken,
@@ -84,11 +86,17 @@ const (
 const UploadsPrefix = "/uploads/"
 
 type setMapArgs struct {
-	ImageURL string `json:"image_url"`
-	Cols     int    `json:"cols"`
-	Rows     int    `json:"rows"`
-	CellFeet int    `json:"cell_feet"`
+	ImageURL   string `json:"image_url"`  // empty for a blank map
+	Background string `json:"background"` // blank maps; default parchment
+	Cols       int    `json:"cols"`
+	Rows       int    `json:"rows"`
+	CellFeet   int    `json:"cell_feet"`
+	// KeepTerrain changes the grid of the current map, keeping its ID and
+	// the painted cells that still fit. Otherwise this is a new map.
+	KeepTerrain bool `json:"keep_terrain"`
 }
+
+const defaultBackground = "#e8e0cc"
 
 func decideSetMap(s *State, cmd Command, env Env) ([]Payload, error) {
 	if !s.IsDM(cmd.By) {
@@ -98,9 +106,17 @@ func decideSetMap(s *State, cmd Command, env Env) ([]Payload, error) {
 	if err := decodeArgs(cmd, &a); err != nil {
 		return nil, err
 	}
-	name, ok := strings.CutPrefix(a.ImageURL, UploadsPrefix)
-	if !ok || name == "" || strings.ContainsAny(name, "/\\") {
-		return nil, reject(CodeInvalidTarget, "image_url must be an uploaded image")
+	if a.ImageURL != "" {
+		name, ok := strings.CutPrefix(a.ImageURL, UploadsPrefix)
+		if !ok || name == "" || strings.ContainsAny(name, "/\\") {
+			return nil, reject(CodeInvalidTarget, "image_url must be an uploaded image")
+		}
+	}
+	if a.Background == "" {
+		a.Background = defaultBackground
+	}
+	if !colorRE.MatchString(a.Background) {
+		return nil, reject(CodeInvalidTarget, "background must look like #rrggbb")
 	}
 	if a.Cols < 1 || a.Cols > maxGridCells || a.Rows < 1 || a.Rows > maxGridCells {
 		return nil, reject(CodeInvalidTarget, "cols and rows must be between 1 and 200")
@@ -111,11 +127,77 @@ func decideSetMap(s *State, cmd Command, env Env) ([]Payload, error) {
 	if a.CellFeet < 1 || a.CellFeet > 100 {
 		return nil, reject(CodeInvalidTarget, "cell_feet must be between 1 and 100")
 	}
-	id := env.NewID("map")
-	if s.Map != nil && s.Map.ImageURL == a.ImageURL {
-		id = s.Map.ID // same image, new grid settings
+	m := Map{
+		ID: env.NewID("map"), ImageURL: a.ImageURL, Background: a.Background,
+		Cols: a.Cols, Rows: a.Rows, CellFeet: a.CellFeet, Terrain: Terrain{},
 	}
-	return []Payload{MapSet{Map: Map{ID: id, ImageURL: a.ImageURL, Cols: a.Cols, Rows: a.Rows, CellFeet: a.CellFeet}}}, nil
+	if a.KeepTerrain {
+		if s.Map == nil {
+			return nil, reject(CodeInvalidTarget, "there is no map to adjust")
+		}
+		m.ID = s.Map.ID
+		for c, k := range s.Map.Terrain {
+			if m.InBounds(c, 1) {
+				m.Terrain[c] = k
+			}
+		}
+	}
+	return []Payload{MapSet{Map: m}}, nil
+}
+
+// maxPaintCells bounds one paint_cells command; a brush stroke is split
+// into several commands, and big areas use a rectangle.
+const maxPaintCells = 2000
+
+type paintCellsArgs struct {
+	Terrain TerrainKind `json:"terrain"`
+	Cells   []Cell      `json:"cells"`
+	Rect    *Rect       `json:"rect"`
+}
+
+func decidePaintCells(s *State, cmd Command, _ Env) ([]Payload, error) {
+	if !s.IsDM(cmd.By) {
+		return nil, reject(CodeForbidden, "only the DM can paint terrain")
+	}
+	var a paintCellsArgs
+	if err := decodeArgs(cmd, &a); err != nil {
+		return nil, err
+	}
+	if a.Terrain != TerrainClear && !a.Terrain.valid() {
+		return nil, reject(CodeInvalidTarget, "unknown terrain "+string(a.Terrain))
+	}
+	if s.Map == nil {
+		return nil, reject(CodeInvalidTarget, "set a map first")
+	}
+	if len(a.Cells) == 0 && a.Rect == nil {
+		return nil, reject(CodeInvalidTarget, "nothing to paint")
+	}
+	if len(a.Cells) > maxPaintCells {
+		return nil, reject(CodeInvalidTarget, "too many cells in one stroke")
+	}
+	for _, c := range a.Cells {
+		if !s.Map.InBounds(c, 1) {
+			return nil, reject(CodeInvalidTarget, "cell is off the map")
+		}
+	}
+	if r := a.Rect; r != nil && (!s.Map.InBounds(r.From, 1) || !s.Map.InBounds(r.To, 1)) {
+		return nil, reject(CodeInvalidTarget, "rectangle is off the map")
+	}
+	return []Payload{CellsPainted{Terrain: a.Terrain, Cells: a.Cells, Rect: a.Rect}}, nil
+}
+
+func decideSetSettings(s *State, cmd Command, _ Env) ([]Payload, error) {
+	if !s.IsDM(cmd.By) {
+		return nil, reject(CodeForbidden, "only the DM can change settings")
+	}
+	var a Settings
+	if err := decodeArgs(cmd, &a); err != nil {
+		return nil, err
+	}
+	if a.Diagonal != DiagonalFive && a.Diagonal != DiagonalAlternating {
+		return nil, reject(CodeInvalidTarget, `diagonal must be "5" or "5-10-5"`)
+	}
+	return []Payload{SettingsChanged{Settings: a}}, nil
 }
 
 type placeTokenArgs struct {
@@ -196,6 +278,12 @@ func decideMoveToken(s *State, cmd Command, _ Env) ([]Payload, error) {
 	if s.Map == nil || !s.Map.InBounds(a.To, t.Size) {
 		return nil, reject(CodeInvalidTarget, "target is off the map")
 	}
+	// The DM can put a token anywhere; everyone else has to walk.
+	if !s.IsDM(cmd.By) {
+		if _, ok := PathCost(s.Map, s.Settings.Diagonal, t.Size, t.Pos, a.To, -1); !ok {
+			return nil, reject(CodeInvalidTarget, "no way through: walls are in the way")
+		}
+	}
 	return []Payload{TokenMoved{Token: t.ID, From: t.Pos, To: a.To}}, nil
 }
 
@@ -214,5 +302,5 @@ func decideRemoveToken(s *State, cmd Command, _ Env) ([]Payload, error) {
 	if s.Tokens[a.Token] == nil {
 		return nil, reject(CodeInvalidTarget, "no such token")
 	}
-	return []Payload{TokenRemoved{Token: a.Token}}, nil //nolint:staticcheck // args and events evolve separately
+	return []Payload{TokenRemoved{Token: a.Token}}, nil
 }

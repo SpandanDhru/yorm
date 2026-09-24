@@ -1,12 +1,21 @@
 import type Konva from "konva";
 import { useEffect, useRef, useState } from "react";
-import { Circle, Group, Image as KImage, Layer, Line, Rect, Stage, Text } from "react-konva";
-import { tokenPos, type TableState } from "../store";
-import type { Cell, Token, TokenID, UserID } from "../types";
+import { Circle, Group, Image as KImage, Layer, Line, Rect, Shape, Stage, Text } from "react-konva";
+import { cellKey, rectCells, tokenPos, type TableState } from "../store";
+import type { Cell, Rect as CellRect, TerrainKind, Token, TokenID, UserID } from "../types";
 
 const CELL = 64; // px per grid cell at zoom 1
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 5;
+
+export type PaintKind = TerrainKind | "clear";
+type Mode = "select" | "brush" | "rect";
+
+export interface Paint {
+  terrain: PaintKind;
+  cells?: Cell[];
+  rect?: CellRect;
+}
 
 interface Props {
   table: TableState;
@@ -16,14 +25,26 @@ interface Props {
   onSelect(id: TokenID | null): void;
   // onMove returns false if the move could not be sent.
   onMove(id: TokenID, to: Cell): boolean;
+  onPaint(p: Paint): void;
 }
 
-export function MapCanvas({ table, me, isDM, selected, onSelect, onMove }: Props) {
+export const TERRAIN: Record<PaintKind, { label: string; fill: string; hatch?: boolean }> = {
+  wall: { label: "Wall", fill: "rgba(38,38,44,0.93)" },
+  difficult: { label: "Difficult", fill: "rgba(139,90,43,0.45)", hatch: true },
+  water: { label: "Water", fill: "rgba(47,127,209,0.5)" },
+  hazard: { label: "Hazard", fill: "rgba(208,69,58,0.45)" },
+  clear: { label: "Erase", fill: "rgba(255,255,255,0.35)" },
+};
+
+export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const size = useSize(wrap);
   const map = table.game?.map ?? null;
-  const image = useImage(map?.image_url);
+  const image = useImage(map?.image_url || undefined);
   const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
+  const [mode, setMode] = useState<Mode>("select");
+  const [brush, setBrush] = useState<PaintKind>("wall");
+  const painting = isDM && mode !== "select";
 
   // Fit the whole map in view when it first appears or its grid changes.
   const hasSize = size.w > 0;
@@ -59,11 +80,51 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove }: Props
     node.position({ x: at.x * CELL, y: at.y * CELL });
   }
 
+  // A stroke in progress: shown locally, sent as one command when released.
+  const stroke = useRef<{ start: Cell; last: Cell; cells: Map<string, Cell> } | null>(null);
+  const [preview, setPreview] = useState<Cell[]>([]);
+
+  function cellAt(e: Konva.KonvaEventObject<PointerEvent>): Cell | null {
+    const p = e.target.getStage()?.getRelativePointerPosition();
+    if (!p || !map) return null;
+    return { x: clamp(Math.floor(p.x / CELL), 0, map.cols - 1), y: clamp(Math.floor(p.y / CELL), 0, map.rows - 1) };
+  }
+
+  function strokeStart(e: Konva.KonvaEventObject<PointerEvent>) {
+    const c = painting && cellAt(e);
+    if (!c) return;
+    stroke.current = { start: c, last: c, cells: new Map([[cellKey(c), c]]) };
+    setPreview([c]);
+  }
+
+  function strokeMove(e: Konva.KonvaEventObject<PointerEvent>) {
+    const s = stroke.current;
+    const c = s && cellAt(e);
+    if (!s || !c || (c.x === s.last.x && c.y === s.last.y)) return;
+    if (mode === "brush") {
+      for (const p of lineCells(s.last, c)) s.cells.set(cellKey(p), p); // no gaps on fast strokes
+      setPreview([...s.cells.values()]);
+    } else {
+      setPreview(rectCells({ from: s.start, to: c }));
+    }
+    s.last = c;
+  }
+
+  function strokeEnd() {
+    const s = stroke.current;
+    if (!s) return;
+    stroke.current = null;
+    setPreview([]);
+    if (mode === "brush") onPaint({ terrain: brush, cells: [...s.cells.values()] });
+    else onPaint({ terrain: brush, rect: { from: s.start, to: s.last } });
+  }
+
   return (
     <div className="canvas" ref={wrap}>
       {!map && (
-        <div className="canvas-empty">{isDM ? "Upload a map to start." : "Waiting for the DM to upload a map…"}</div>
+        <div className="canvas-empty">{isDM ? "Upload a map or create a blank one to start." : "Waiting for the DM to set up a map…"}</div>
       )}
+      {map && isDM && <Toolbar mode={mode} setMode={setMode} brush={brush} setBrush={setBrush} />}
       {map && hasSize && (
         <Stage
           width={size.w}
@@ -72,29 +133,30 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove }: Props
           y={view.y}
           scaleX={view.scale}
           scaleY={view.scale}
-          draggable
+          draggable={!painting}
+          className={painting ? "painting" : undefined}
           onWheel={zoom}
           onDragEnd={(e) => {
             if (e.target === e.target.getStage()) setView((v) => ({ ...v, x: e.target.x(), y: e.target.y() }));
           }}
-          onMouseDown={(e) => {
-            if (e.target === e.target.getStage() || e.target.name() === "background") onSelect(null);
+          onPointerDown={(e) => {
+            if (painting) strokeStart(e);
+            else if (e.target === e.target.getStage() || e.target.name() === "background") onSelect(null);
           }}
-          onTouchStart={(e) => {
-            if (e.target === e.target.getStage() || e.target.name() === "background") onSelect(null);
-          }}
+          onPointerMove={strokeMove}
+          onPointerUp={strokeEnd}
+          onPointerLeave={strokeEnd}
         >
-          <Layer>
-            {image ? (
-              <KImage name="background" image={image} width={map.cols * CELL} height={map.rows * CELL} />
-            ) : (
-              <Rect name="background" width={map.cols * CELL} height={map.rows * CELL} fill="#2b2f36" />
-            )}
+          <Layer listening={!painting}>
+            <Rect name="background" width={map.cols * CELL} height={map.rows * CELL} fill={map.background || "#2b2f36"} />
+            {image && <KImage name="background" image={image} width={map.cols * CELL} height={map.rows * CELL} />}
           </Layer>
           <Layer listening={false}>
+            <Shape sceneFunc={(ctx) => drawCells(ctx, Object.entries(map.terrain).map(([k, kind]) => [parseKey(k), kind]))} />
             <Grid cols={map.cols} rows={map.rows} />
+            {preview.length > 0 && <Shape sceneFunc={(ctx) => drawCells(ctx, preview.map((c) => [c, brush]))} />}
           </Layer>
-          <Layer>
+          <Layer listening={!painting}>
             {Object.values(table.game!.tokens).map((t) => {
               const pos = tokenPos(table, t.id) ?? t.pos;
               const mine = t.controllers.includes(me);
@@ -105,8 +167,7 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove }: Props
                   x={pos.x * CELL}
                   y={pos.y * CELL}
                   draggable={isDM || mine}
-                  onMouseDown={() => onSelect(t.id)}
-                  onTouchStart={() => onSelect(t.id)}
+                  onPointerDown={() => onSelect(t.id)}
                   onDragEnd={(e) => {
                     e.cancelBubble = true; // don't pan the stage
                     dropToken(t, pos, e.target);
@@ -155,6 +216,72 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove }: Props
       )}
     </div>
   );
+}
+
+function Toolbar(props: { mode: Mode; setMode(m: Mode): void; brush: PaintKind; setBrush(k: PaintKind): void }) {
+  const modes: { mode: Mode; label: string; title: string }[] = [
+    { mode: "select", label: "Move", title: "Move tokens and pan the map" },
+    { mode: "brush", label: "Brush", title: "Paint cells one by one" },
+    { mode: "rect", label: "Rectangle", title: "Paint a rectangle" },
+  ];
+  return (
+    <div className="toolbar" role="toolbar" aria-label="Map tools">
+      {modes.map((m) => (
+        <button key={m.mode} title={m.title} aria-pressed={props.mode === m.mode} onClick={() => props.setMode(m.mode)}>
+          {m.label}
+        </button>
+      ))}
+      {props.mode !== "select" && (
+        <>
+          <span className="toolbar-sep" />
+          {(Object.keys(TERRAIN) as PaintKind[]).map((k) => (
+            <button key={k} aria-pressed={props.brush === k} onClick={() => props.setBrush(k)}>
+              <span className="swatch" style={{ background: TERRAIN[k].fill }} />
+              {TERRAIN[k].label}
+            </button>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+function drawCells(ctx: Konva.Context, cells: [Cell, PaintKind][]) {
+  for (const [c, kind] of cells) {
+    const style = TERRAIN[kind];
+    const x = c.x * CELL;
+    const y = c.y * CELL;
+    ctx.fillStyle = style.fill;
+    ctx.fillRect(x, y, CELL, CELL);
+    if (style.hatch) {
+      ctx.beginPath();
+      for (let i = 1; i < 4; i++) {
+        ctx.moveTo(x + (i * CELL) / 4, y);
+        ctx.lineTo(x, y + (i * CELL) / 4);
+        ctx.moveTo(x + CELL, y + (i * CELL) / 4);
+        ctx.lineTo(x + (i * CELL) / 4, y + CELL);
+      }
+      ctx.strokeStyle = "rgba(90,55,20,0.7)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+}
+
+function parseKey(key: string): Cell {
+  const [x = 0, y = 0] = key.split(",").map(Number);
+  return { x, y };
+}
+
+// lineCells lists the cells from a to b inclusive, without gaps.
+export function lineCells(a: Cell, b: Cell): Cell[] {
+  const n = Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+  const cells: Cell[] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = n === 0 ? 0 : i / n;
+    cells.push({ x: Math.round(a.x + (b.x - a.x) * t), y: Math.round(a.y + (b.y - a.y) * t) });
+  }
+  return cells;
 }
 
 function Grid({ cols, rows }: { cols: number; rows: number }) {

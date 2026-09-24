@@ -7,6 +7,20 @@ linters:
     - gosec
     - misspell
     - unconvert
+  settings:
+    staticcheck:
+      checks:
+        - all
+        # Command args and events often share a shape but must evolve
+        # separately, so we build events field by field on purpose.
+        - -S1016
+        # The rest match staticcheck's defaults.
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
 
 formatters:
   enable:

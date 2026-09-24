@@ -79,7 +79,7 @@ func TestStore(t *testing.T) {
 		}
 		evs := []game.Event{
 			ev(2, game.MemberJoined{Member: game.Member{UserID: "usr_kai", DisplayName: "Kai", Role: auth.RolePlayer}}),
-			ev(3, game.MapSet{Map: game.Map{ID: "map_1", ImageURL: "/uploads/m.png", Cols: 10, Rows: 8, CellFeet: 5}}),
+			ev(3, game.MapSet{Map: game.Map{ID: "map_1", ImageURL: "/uploads/m.png", Cols: 10, Rows: 8, CellFeet: 5, Terrain: game.Terrain{}}}),
 		}
 		if err := s.Append(ctx, "ses_1", evs); err != nil {
 			t.Fatal(err)

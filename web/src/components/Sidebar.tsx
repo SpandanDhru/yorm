@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { inviteLink, uploadMap, type Seat } from "../api";
-import type { Cell, GameState, TokenID } from "../types";
+import type { Cell, GameState, MapInfo, TokenID } from "../types";
 
 interface Props {
   seat: Seat;
@@ -47,7 +47,7 @@ export function Sidebar({ seat, game, selected, command }: Props) {
       )}
 
       {isDM && game.map && <AddToken game={game} command={command} />}
-      {isDM && <MapUpload seat={seat} hasMap={!!game.map} />}
+      {isDM && <MapPanel seat={seat} game={game} command={command} />}
     </aside>
   );
 }
@@ -130,11 +130,11 @@ function AddToken({ game, command }: { game: GameState; command: Props["command"
 }
 
 // freeCell finds the first spot, row by row, where a token of the given
-// size overlaps no other token.
+// size overlaps no other token or wall.
 export function freeCell(game: GameState, size: number): Cell | null {
   const map = game.map;
   if (!map) return null;
-  const taken = new Set<string>();
+  const taken = new Set<string>(Object.keys(map.terrain).filter((k) => map.terrain[k] === "wall"));
   for (const t of Object.values(game.tokens)) {
     for (let dx = 0; dx < t.size; dx++) for (let dy = 0; dy < t.size; dy++) taken.add(`${t.pos.x + dx},${t.pos.y + dy}`);
   }
@@ -148,11 +148,92 @@ export function freeCell(game: GameState, size: number): Cell | null {
   return { x: 0, y: 0 }; // full map: stack on the corner, the DM can drag it
 }
 
-function MapUpload({ seat, hasMap }: { seat: Seat; hasMap: boolean }) {
+function MapPanel({ seat, game, command }: { seat: Seat; game: GameState; command: Props["command"] }) {
+  const map = game.map;
+  const [replacing, setReplacing] = useState(!map);
+  return (
+    <section className="stack">
+      <h3>Map</h3>
+      {map && (
+        <>
+          <GridForm key={map.id} map={map} command={command} />
+          <label>
+            Diagonals
+            <select
+              value={game.settings.diagonal}
+              onChange={(e) => command("set_settings", { diagonal: e.target.value })}
+            >
+              <option value="5">Every diagonal 5 ft</option>
+              <option value="5-10-5">Alternate 5 / 10 ft</option>
+            </select>
+          </label>
+          {!replacing && (
+            <button className="secondary" onClick={() => setReplacing(true)}>
+              Replace map…
+            </button>
+          )}
+        </>
+      )}
+      {replacing && <NewMap seat={seat} command={command} onDone={() => setReplacing(false)} canCancel={!!map} />}
+    </section>
+  );
+}
+
+// GridForm changes the grid of the current map, keeping painted terrain.
+function GridForm({ map, command }: { map: MapInfo; command: Props["command"] }) {
+  const [cols, setCols] = useState(map.cols);
+  const [rows, setRows] = useState(map.rows);
+  const [cellFeet, setCellFeet] = useState(map.cell_feet);
+  const changed = cols !== map.cols || rows !== map.rows || cellFeet !== map.cell_feet;
+  return (
+    <form
+      className="stack"
+      onSubmit={(e) => {
+        e.preventDefault();
+        command("set_map", {
+          image_url: map.image_url, background: map.background, cols, rows, cell_feet: cellFeet, keep_terrain: true,
+        });
+      }}
+    >
+      <GridFields cols={cols} rows={rows} cellFeet={cellFeet} setCols={setCols} setRows={setRows} setCellFeet={setCellFeet} />
+      {changed && <button>Apply grid</button>}
+    </form>
+  );
+}
+
+function GridFields(p: {
+  cols: number;
+  rows: number;
+  cellFeet: number;
+  setCols(n: number): void;
+  setRows(n: number): void;
+  setCellFeet(n: number): void;
+}) {
+  return (
+    <div className="row">
+      <label>
+        Columns
+        <input type="number" min={1} max={200} value={p.cols} onChange={(e) => p.setCols(Number(e.target.value))} />
+      </label>
+      <label>
+        Rows
+        <input type="number" min={1} max={200} value={p.rows} onChange={(e) => p.setRows(Number(e.target.value))} />
+      </label>
+      <label>
+        Feet/cell
+        <input type="number" min={1} max={100} value={p.cellFeet} onChange={(e) => p.setCellFeet(Number(e.target.value))} />
+      </label>
+    </div>
+  );
+}
+
+function NewMap(p: { seat: Seat; command: Props["command"]; onDone(): void; canCancel: boolean }) {
+  const [kind, setKind] = useState<"image" | "blank">("image");
   const [file, setFile] = useState<File | null>(null);
   const [cols, setCols] = useState(20);
   const [rows, setRows] = useState(15);
   const [cellFeet, setCellFeet] = useState(5);
+  const [background, setBackground] = useState("#e8e0cc");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -171,13 +252,17 @@ function MapUpload({ seat, hasMap }: { seat: Seat; hasMap: boolean }) {
 
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (kind === "blank") {
+      p.command("set_map", { background, cols, rows, cell_feet: cellFeet });
+      p.onDone();
+      return;
+    }
     if (!file) return;
     setBusy(true);
     setError("");
     try {
-      await uploadMap(seat, file, { cols, rows, cellFeet });
-      setFile(null);
-      (e.target as HTMLFormElement).reset();
+      await uploadMap(p.seat, file, { cols, rows, cellFeet });
+      p.onDone();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -186,27 +271,35 @@ function MapUpload({ seat, hasMap }: { seat: Seat; hasMap: boolean }) {
   }
 
   return (
-    <section>
-      <h3>{hasMap ? "Change map" : "Upload map"}</h3>
-      <form className="stack" onSubmit={submit}>
+    <form className="stack" onSubmit={submit}>
+      <div className="tabs" role="tablist">
+        <button type="button" role="tab" aria-selected={kind === "image"} onClick={() => setKind("image")}>
+          Upload image
+        </button>
+        <button type="button" role="tab" aria-selected={kind === "blank"} onClick={() => setKind("blank")}>
+          Blank map
+        </button>
+      </div>
+      {kind === "image" ? (
         <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(e) => void pick(e.target.files?.[0] ?? null)} required />
-        <div className="row">
-          <label>
-            Columns
-            <input type="number" min={1} max={200} value={cols} onChange={(e) => setCols(Number(e.target.value))} />
-          </label>
-          <label>
-            Rows
-            <input type="number" min={1} max={200} value={rows} onChange={(e) => setRows(Number(e.target.value))} />
-          </label>
-          <label>
-            Feet/cell
-            <input type="number" min={1} max={100} value={cellFeet} onChange={(e) => setCellFeet(Number(e.target.value))} />
-          </label>
-        </div>
-        {error && <p className="error">{error}</p>}
-        <button disabled={busy || !file}>{busy ? "Uploading…" : "Upload"}</button>
-      </form>
-    </section>
+      ) : (
+        <label className="inline">
+          Background
+          <input type="color" value={background} onChange={(e) => setBackground(e.target.value)} />
+        </label>
+      )}
+      <GridFields cols={cols} rows={rows} cellFeet={cellFeet} setCols={setCols} setRows={setRows} setCellFeet={setCellFeet} />
+      {error && <p className="error">{error}</p>}
+      <div className="row">
+        <button disabled={busy || (kind === "image" && !file)}>
+          {busy ? "Uploading…" : kind === "image" ? "Upload" : "Create blank map"}
+        </button>
+        {p.canCancel && (
+          <button type="button" className="secondary" onClick={p.onDone}>
+            Cancel
+          </button>
+        )}
+      </div>
+    </form>
   );
 }

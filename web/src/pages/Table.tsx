@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { loadSeats, type Seat } from "../api";
-import { MapCanvas } from "../components/MapCanvas";
+import { MapCanvas, type Paint } from "../components/MapCanvas";
 import { Sidebar } from "../components/Sidebar";
 import { navigate } from "../nav";
 import { Connection, type Status } from "../socket";
@@ -22,6 +22,10 @@ export function Table({ sessionId }: { sessionId: string }) {
   }
   return <TableView seat={seat} />;
 }
+
+// Cells per paint_cells command: a long stroke is sent in pieces, each well
+// under the server's 16 KB message limit.
+const PAINT_CHUNK = 500;
 
 const STATUS_TEXT: Record<Status, string> = {
   connecting: "Connecting…",
@@ -96,6 +100,17 @@ function TableView({ seat }: { seat: Seat }) {
     return true;
   }, []);
 
+  const paint = useCallback(
+    (p: Paint) => {
+      if (p.rect) return command("paint_cells", { terrain: p.terrain, rect: p.rect });
+      const cells = p.cells ?? [];
+      for (let i = 0; i < cells.length; i += PAINT_CHUNK) {
+        command("paint_cells", { terrain: p.terrain, cells: cells.slice(i, i + PAINT_CHUNK) });
+      }
+    },
+    [command],
+  );
+
   useEffect(() => {
     if (seat.role !== "dm" || !selectedToken) return;
     const onKey = (e: KeyboardEvent) => {
@@ -129,6 +144,7 @@ function TableView({ seat }: { seat: Seat }) {
         selected={selectedToken}
         onSelect={setSelected}
         onMove={move}
+        onPaint={paint}
       />
       {table.game && <Sidebar seat={seat} game={table.game} selected={selectedToken} command={command} />}
       {notice && (

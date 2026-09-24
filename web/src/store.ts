@@ -1,7 +1,18 @@
 // Client state: the server's state as last seen, plus this client's moves
 // that are still waiting for the server's answer. Holds no game rules; the
 // server validates everything.
-import type { Cell, GameEvent, GameState, TokenID } from "./types";
+import type { Cell, GameEvent, GameState, Rect, TokenID } from "./types";
+
+export const cellKey = (c: Cell) => `${c.x},${c.y}`;
+
+// rectCells lists every cell of an inclusive rectangle, corners in any order.
+export function rectCells(r: Rect): Cell[] {
+  const cells: Cell[] = [];
+  for (let y = Math.min(r.from.y, r.to.y); y <= Math.max(r.from.y, r.to.y); y++) {
+    for (let x = Math.min(r.from.x, r.to.x); x <= Math.max(r.from.x, r.to.x); x++) cells.push({ x, y });
+  }
+  return cells;
+}
 
 export interface PendingMove {
   token: TokenID;
@@ -34,7 +45,21 @@ export function applyEvent(s: GameState, ev: GameEvent): GameState {
       next.members = { ...s.members, [ev.data.member.user_id]: ev.data.member };
       break;
     case "MapSet":
-      next.map = ev.data.map;
+      next.map = { ...ev.data.map, terrain: ev.data.map.terrain ?? {} };
+      break;
+    case "CellsPainted": {
+      if (!s.map) break;
+      const terrain = { ...s.map.terrain };
+      const { terrain: kind, cells = [], rect } = ev.data;
+      for (const c of rect ? [...cells, ...rectCells(rect)] : cells) {
+        if (kind === "clear") delete terrain[cellKey(c)];
+        else terrain[cellKey(c)] = kind;
+      }
+      next.map = { ...s.map, terrain };
+      break;
+    }
+    case "SettingsChanged":
+      next.settings = ev.data.settings;
       break;
     case "TokenPlaced":
       next.tokens = { ...s.tokens, [ev.data.token.id]: ev.data.token };

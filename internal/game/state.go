@@ -5,6 +5,9 @@
 package game
 
 import (
+	"encoding/json"
+	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/SpandanDhru/yorm/internal/auth"
@@ -24,19 +27,79 @@ type Cell struct {
 // State is everything the session actor knows about one session. Only the
 // actor goroutine touches it.
 type State struct {
-	ID      string             `json:"id"`
-	Seq     int64              `json:"seq"` // last applied event
-	Map     *Map               `json:"map"` // nil until the DM uploads one
-	Tokens  map[TokenID]*Token `json:"tokens"`
-	Members map[UserID]*Member `json:"members"`
+	ID       string             `json:"id"`
+	Seq      int64              `json:"seq"` // last applied event
+	Settings Settings           `json:"settings"`
+	Map      *Map               `json:"map"` // nil until the DM sets one
+	Tokens   map[TokenID]*Token `json:"tokens"`
+	Members  map[UserID]*Member `json:"members"`
 }
 
+// Settings are the session's house rules.
+type Settings struct {
+	Diagonal DiagonalRule `json:"diagonal"`
+}
+
+type DiagonalRule string
+
+const (
+	DiagonalFive        DiagonalRule = "5"      // every diagonal step costs one cell
+	DiagonalAlternating DiagonalRule = "5-10-5" // every second diagonal step costs two
+)
+
 type Map struct {
-	ID       string `json:"id"`
-	ImageURL string `json:"image_url"`
-	Cols     int    `json:"cols"`
-	Rows     int    `json:"rows"`
-	CellFeet int    `json:"cell_feet"`
+	ID         string  `json:"id"`
+	ImageURL   string  `json:"image_url"`  // empty for a blank map
+	Background string  `json:"background"` // #rrggbb, shown when there is no image
+	Cols       int     `json:"cols"`
+	Rows       int     `json:"rows"`
+	CellFeet   int     `json:"cell_feet"`
+	Terrain    Terrain `json:"terrain"`
+}
+
+// Terrain holds the painted cells; unpainted cells are clear. In JSON it
+// is an object keyed by "x,y".
+type Terrain map[Cell]TerrainKind
+
+func (t Terrain) MarshalJSON() ([]byte, error) {
+	m := make(map[string]TerrainKind, len(t))
+	for c, k := range t {
+		m[fmt.Sprintf("%d,%d", c.X, c.Y)] = k
+	}
+	return json.Marshal(m)
+}
+
+func (t *Terrain) UnmarshalJSON(b []byte) error {
+	var m map[string]TerrainKind
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	*t = make(Terrain, len(m))
+	for key, k := range m {
+		var c Cell
+		if _, err := fmt.Sscanf(key, "%d,%d", &c.X, &c.Y); err != nil {
+			return fmt.Errorf("game: bad terrain cell %q", key)
+		}
+		(*t)[c] = k
+	}
+	return nil
+}
+
+type TerrainKind string
+
+const (
+	TerrainWall      TerrainKind = "wall"      // cannot be entered
+	TerrainDifficult TerrainKind = "difficult" // costs double
+	TerrainWater     TerrainKind = "water"     // costs double (swimming)
+	TerrainHazard    TerrainKind = "hazard"    // a marker for the DM; no rule
+)
+
+func (k TerrainKind) valid() bool {
+	switch k {
+	case TerrainWall, TerrainDifficult, TerrainWater, TerrainHazard:
+		return true
+	}
+	return false
 }
 
 // InBounds reports whether a token of the given size placed at c fits on the map.
@@ -60,7 +123,12 @@ type Member struct {
 }
 
 func NewState(id string) *State {
-	return &State{ID: id, Tokens: map[TokenID]*Token{}, Members: map[UserID]*Member{}}
+	return &State{
+		ID:       id,
+		Settings: Settings{Diagonal: DiagonalFive},
+		Tokens:   map[TokenID]*Token{},
+		Members:  map[UserID]*Member{},
+	}
 }
 
 // Apply folds ev into s. It must stay deterministic: no clocks, randomness,
@@ -74,7 +142,24 @@ func (s *State) Apply(ev Event) {
 		s.Members[m.UserID] = &m
 	case MapSet:
 		m := d.Map
+		m.Terrain = maps.Clone(m.Terrain) // painting mutates it; the event must not change
+		if m.Terrain == nil {
+			m.Terrain = Terrain{}
+		}
 		s.Map = &m
+	case CellsPainted:
+		if s.Map == nil {
+			break
+		}
+		for _, c := range d.cells() {
+			if d.Terrain == TerrainClear {
+				delete(s.Map.Terrain, c)
+			} else {
+				s.Map.Terrain[c] = d.Terrain
+			}
+		}
+	case SettingsChanged:
+		s.Settings = d.Settings
 	case TokenPlaced:
 		t := d.Token
 		s.Tokens[t.ID] = &t

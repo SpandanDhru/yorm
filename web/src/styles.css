@@ -237,3 +237,79 @@ label {
     max-height: 40dvh;
   }
 }
+
+button.secondary {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+label.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.tabs button {
+  flex: 1;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.tabs button[aria-selected="true"] {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.toolbar {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.3rem;
+  max-width: calc(100% - 1.5rem);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.toolbar button {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.55rem;
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.toolbar button[aria-pressed="true"] {
+  background: var(--accent);
+  color: #1b1405;
+}
+
+.toolbar-sep {
+  width: 1px;
+  background: var(--border);
+  margin: 0 0.2rem;
+}
+
+.swatch {
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+.painting {
+  cursor: crosshair;
+}
