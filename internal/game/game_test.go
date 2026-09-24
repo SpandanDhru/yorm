@@ -1,8 +1,11 @@
 package game
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"testing"
@@ -244,6 +247,14 @@ func TestPayloadRoundTrip(t *testing.T) {
 		HPChanged{Actor: "a", HP: HitPoints{Current: 3, Max: 7}, Delta: -4},
 		ConditionAdded{Actor: "a", Condition: Condition{Name: "Poisoned", Source: "Giant spider"}},
 		ConditionRemoved{Actor: "a", Name: "Poisoned"},
+		CombatStarted{Order: []InitEntry{{Actor: "a", Total: ptr(17), Roll: ptr(14), Bonus: 3, TieBreak: 9}, {Actor: "b", Bonus: 1, TieBreak: 2}}},
+		InitiativeSet{Actor: "b", Total: 12, Roll: ptr(11), Bonus: 1, TieBreak: 2, Physical: true},
+		CombatantRemoved{Actor: "b"},
+		TurnStarted{Actor: "a", Round: 2, Movement: 30},
+		TurnEnded{Actor: "a"},
+		MovementSpent{Actor: "a", Feet: 15, Left: 15},
+		ActionUsed{Actor: "a", Kind: ActionMain, Used: true, Dash: true, MovementLeft: 45},
+		CombatEnded{},
 	}
 	if len(all) != len(payloads) {
 		t.Fatalf("test covers %d payloads, registry has %d", len(all), len(payloads))
@@ -269,7 +280,10 @@ func TestPayloadRoundTrip(t *testing.T) {
 // Replaying accepted events rebuilds exactly the state that produced them.
 func TestReplayMatchesLiveState(t *testing.T) {
 	n := 0
-	env := Env{NewID: func(p string) string { n++; return p + "_" + strconv.Itoa(n) }}
+	env := Env{
+		NewID: func(p string) string { n++; return p + "_" + strconv.Itoa(n) },
+		Roll:  func(sides int) int { n++; return n%sides + 1 },
+	}
 	live := NewState("ses_1")
 	var log []Event
 	run := func(c Command) {
@@ -314,6 +328,19 @@ func TestReplayMatchesLiveState(t *testing.T) {
 			run(cmd(dm, "delete_character", a+`}`))
 		}
 	}
+	run(cmd(dm, "create_character", `{"name":"Wolf","max_hp":11,"kind":"npc","controllers":["usr_kai"]}`))
+	run(cmd(dm, "start_combat", ``))
+	for range 3 {
+		run(cmd(dm, "use_action", `{"kind":"action","dash":true}`))
+		run(cmd(dm, "use_action", `{"kind":"reaction"}`))
+		run(cmd(dm, "end_turn", `{}`))
+	}
+	for id, c := range live.Actors {
+		if c.Name == "Wolf" {
+			run(cmd(dm, "join_combat", `{"actor":"`+string(id)+`","total":30}`))
+		}
+	}
+	run(cmd(dm, "prev_turn", `{}`))
 
 	replayed := NewState("ses_1")
 	for _, ev := range log {
@@ -379,107 +406,134 @@ func mapOf(rows ...string) *Map {
 	return m
 }
 
+// pathCase is one PathCost check. The cases are also written to
+// web/src/testdata/pathcost.json so the frontend's copy of the algorithm,
+// used to preview a drag's cost, is tested against the same answers.
+type pathCase struct {
+	Name  string       `json:"name"`
+	Rows  []string     `json:"rows"` // see mapOf
+	Rule  DiagonalRule `json:"rule"`
+	Size  int          `json:"size"`
+	From  Cell         `json:"from"`
+	To    Cell         `json:"to"`
+	Limit int          `json:"limit"`
+	Feet  int          `json:"feet"`
+	OK    bool         `json:"ok"`
+}
+
+var openRows = []string{
+	"......",
+	"......",
+	"......",
+	"......",
+}
+
+var pathCases = []pathCase{
+	{"stay put", openRows, DiagonalFive, 1, Cell{1, 1}, Cell{1, 1}, -1, 0, true},
+	{"straight line", openRows, DiagonalFive, 1, Cell{0, 0}, Cell{5, 0}, -1, 25, true},
+	{"diagonal is 5 ft", openRows, DiagonalFive, 1, Cell{0, 0}, Cell{3, 3}, -1, 15, true},
+	{"5-10-5: 3 diagonals = 20 ft", openRows, DiagonalAlternating, 1, Cell{0, 0}, Cell{3, 3}, -1, 20, true},
+	{"5-10-5: 2 diagonals = 15 ft", openRows, DiagonalAlternating, 1, Cell{0, 0}, Cell{2, 2}, -1, 15, true},
+	{"5-10-5: knight move = 10 ft", openRows, DiagonalAlternating, 1, Cell{0, 0}, Cell{2, 1}, -1, 10, true},
+	// Down 3, around the wall's end without cutting its corner (2 steps), up 3.
+	{"walk around a wall", []string{
+		".#....",
+		".#....",
+		".#....",
+		"......",
+	}, DiagonalFive, 1, Cell{0, 0}, Cell{2, 0}, -1, 40, true},
+	{"sealed off", []string{
+		".#....",
+		"##....",
+		"......",
+		"......",
+	}, DiagonalFive, 1, Cell{0, 0}, Cell{3, 3}, -1, 0, false},
+	{"no squeezing diagonally past a corner", []string{
+		".#....",
+		"#.....",
+		"......",
+		"......",
+	}, DiagonalFive, 1, Cell{0, 0}, Cell{1, 1}, -1, 0, false},
+	{"destination is a wall", []string{
+		"...#..",
+		"......",
+		"......",
+		"......",
+	}, DiagonalFive, 1, Cell{0, 0}, Cell{3, 0}, -1, 0, false},
+	{"difficult terrain doubles", []string{
+		".::...",
+		"######",
+		"......",
+		"......",
+	}, DiagonalFive, 1, Cell{0, 0}, Cell{3, 0}, -1, 25, true},
+	{"water doubles too", []string{
+		".~....",
+		"######",
+		"......",
+		"......",
+	}, DiagonalFive, 1, Cell{0, 0}, Cell{2, 0}, -1, 15, true},
+	{"cheaper to go around difficult terrain", []string{
+		"......",
+		".:::..",
+		"......",
+		"......",
+	}, DiagonalFive, 1, Cell{0, 1}, Cell{4, 1}, -1, 20, true},
+	{"hazards cost nothing extra", []string{
+		".!!!..",
+		"......",
+		"......",
+		"......",
+	}, DiagonalFive, 1, Cell{0, 0}, Cell{4, 0}, -1, 20, true},
+	{"large token fits through a 2-wide gap", []string{
+		"......",
+		"#..###",
+		"#..###",
+		"......",
+	}, DiagonalFive, 2, Cell{1, 0}, Cell{1, 2}, -1, 10, true},
+	{"large token blocked by a 1-wide gap", []string{
+		"......",
+		"#.####",
+		"#.####",
+		"......",
+	}, DiagonalFive, 2, Cell{0, 0}, Cell{0, 2}, -1, 0, false},
+	{"large token pays double if any of it is difficult", []string{
+		"......",
+		"...:..",
+		"......",
+		"......",
+	}, DiagonalFive, 2, Cell{0, 0}, Cell{2, 0}, -1, 15, true},
+	{"reachable within limit", openRows, DiagonalFive, 1, Cell{0, 0}, Cell{5, 0}, 25, 25, true},
+	{"beyond limit", openRows, DiagonalFive, 1, Cell{0, 0}, Cell{5, 0}, 20, 0, false},
+	{"off the map", openRows, DiagonalFive, 1, Cell{0, 0}, Cell{6, 0}, -1, 0, false},
+}
+
 func TestPathCost(t *testing.T) {
-	open := mapOf(
-		"......",
-		"......",
-		"......",
-		"......",
-	)
-	tests := []struct {
-		name     string
-		m        *Map
-		rule     DiagonalRule
-		size     int
-		from, to Cell
-		limit    int
-		feet     int
-		ok       bool
-	}{
-		{"stay put", open, DiagonalFive, 1, Cell{1, 1}, Cell{1, 1}, -1, 0, true},
-		{"straight line", open, DiagonalFive, 1, Cell{0, 0}, Cell{5, 0}, -1, 25, true},
-		{"diagonal is 5 ft", open, DiagonalFive, 1, Cell{0, 0}, Cell{3, 3}, -1, 15, true},
-		{"5-10-5: 3 diagonals = 20 ft", open, DiagonalAlternating, 1, Cell{0, 0}, Cell{3, 3}, -1, 20, true},
-		{"5-10-5: 2 diagonals = 15 ft", open, DiagonalAlternating, 1, Cell{0, 0}, Cell{2, 2}, -1, 15, true},
-		{"5-10-5: knight move = 10 ft", open, DiagonalAlternating, 1, Cell{0, 0}, Cell{2, 1}, -1, 10, true},
-		// Down 3, around the wall's end without cutting its corner (2 steps), up 3.
-		{"walk around a wall", mapOf(
-			".#....",
-			".#....",
-			".#....",
-			"......",
-		), DiagonalFive, 1, Cell{0, 0}, Cell{2, 0}, -1, 40, true},
-		{"sealed off", mapOf(
-			".#....",
-			"##....",
-			"......",
-			"......",
-		), DiagonalFive, 1, Cell{0, 0}, Cell{3, 3}, -1, 0, false},
-		{"no squeezing diagonally past a corner", mapOf(
-			".#....",
-			"#.....",
-			"......",
-			"......",
-		), DiagonalFive, 1, Cell{0, 0}, Cell{1, 1}, -1, 0, false},
-		{"destination is a wall", mapOf(
-			"...#..",
-			"......",
-			"......",
-			"......",
-		), DiagonalFive, 1, Cell{0, 0}, Cell{3, 0}, -1, 0, false},
-		{"difficult terrain doubles", mapOf(
-			".::...",
-			"######",
-			"......",
-			"......",
-		), DiagonalFive, 1, Cell{0, 0}, Cell{3, 0}, -1, 25, true},
-		{"water doubles too", mapOf(
-			".~....",
-			"######",
-			"......",
-			"......",
-		), DiagonalFive, 1, Cell{0, 0}, Cell{2, 0}, -1, 15, true},
-		{"cheaper to go around difficult terrain", mapOf(
-			"......",
-			".:::..",
-			"......",
-			"......",
-		), DiagonalFive, 1, Cell{0, 1}, Cell{4, 1}, -1, 20, true},
-		{"hazards cost nothing extra", mapOf(
-			".!!!..",
-			"......",
-			"......",
-			"......",
-		), DiagonalFive, 1, Cell{0, 0}, Cell{4, 0}, -1, 20, true},
-		{"large token fits through a 2-wide gap", mapOf(
-			"......",
-			"#..###",
-			"#..###",
-			"......",
-		), DiagonalFive, 2, Cell{1, 0}, Cell{1, 2}, -1, 10, true},
-		{"large token blocked by a 1-wide gap", mapOf(
-			"......",
-			"#.####",
-			"#.####",
-			"......",
-		), DiagonalFive, 2, Cell{0, 0}, Cell{0, 2}, -1, 0, false},
-		{"large token pays double if any of it is difficult", mapOf(
-			"......",
-			"...:..",
-			"......",
-			"......",
-		), DiagonalFive, 2, Cell{0, 0}, Cell{2, 0}, -1, 15, true},
-		{"reachable within limit", open, DiagonalFive, 1, Cell{0, 0}, Cell{5, 0}, 25, 25, true},
-		{"beyond limit", open, DiagonalFive, 1, Cell{0, 0}, Cell{5, 0}, 20, 0, false},
-		{"off the map", open, DiagonalFive, 1, Cell{0, 0}, Cell{6, 0}, -1, 0, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			feet, ok := PathCost(tt.m, tt.rule, tt.size, tt.from, tt.to, tt.limit)
-			if feet != tt.feet || ok != tt.ok {
-				t.Fatalf("PathCost = %d, %v; want %d, %v", feet, ok, tt.feet, tt.ok)
+	for _, tt := range pathCases {
+		t.Run(tt.Name, func(t *testing.T) {
+			feet, ok := PathCost(mapOf(tt.Rows...), tt.Rule, tt.Size, tt.From, tt.To, tt.Limit)
+			if feet != tt.Feet || ok != tt.OK {
+				t.Fatalf("PathCost = %d, %v; want %d, %v", feet, ok, tt.Feet, tt.OK)
 			}
 		})
+	}
+}
+
+// Run with UPDATE_FIXTURES=1 to rewrite the frontend's copy of pathCases.
+func TestPathCostFixtureIsCurrent(t *testing.T) {
+	want, err := json.MarshalIndent(pathCases, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = append(want, '\n')
+	path := filepath.Join("..", "..", "web", "src", "testdata", "pathcost.json")
+	if os.Getenv("UPDATE_FIXTURES") != "" {
+		if err := os.WriteFile(path, want, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := os.ReadFile(path) //nolint:gosec // a fixed path in the repo
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("%s is out of date (%v); run UPDATE_FIXTURES=1 go test ./internal/game", path, err)
 	}
 }
 

@@ -1,7 +1,7 @@
 // Client state: the server's state as last seen, plus this client's moves
 // that are still waiting for the server's answer. Holds no game rules; the
 // server validates everything.
-import type { ActorID, Cell, Character, GameEvent, GameState, Rect, Token, TokenID, UserID } from "./types";
+import type { ActorID, Cell, Character, Encounter, GameEvent, GameState, InitEntry, Rect, Token, TokenID, UserID } from "./types";
 
 export const cellKey = (c: Cell) => `${c.x},${c.y}`;
 
@@ -81,8 +81,64 @@ export function applyEvent(s: GameState, ev: GameEvent): GameState {
     case "CharacterDeleted": {
       const { [ev.data.actor]: _, ...rest } = s.actors;
       next.actors = rest;
+      next.encounter = removeCombatant(s.encounter, ev.data.actor);
       break;
     }
+    case "CombatStarted":
+      next.encounter = { round: 1, order: sortOrder(ev.data.order), active: "", economy: NO_ECONOMY, reaction_used: {} };
+      break;
+    case "InitiativeSet": {
+      const e = s.encounter;
+      if (!e) break;
+      const d = ev.data;
+      const old = e.order.find((x) => x.actor === d.actor);
+      const entry: InitEntry = {
+        actor: d.actor, total: d.total, roll: d.roll ?? null, bonus: d.bonus,
+        tie_break: old ? old.tie_break : d.tie_break, physical: d.physical,
+      };
+      const order = old ? e.order.map((x) => (x.actor === d.actor ? entry : x)) : [...e.order, entry];
+      next.encounter = { ...e, order: sortOrder(order) };
+      break;
+    }
+    case "CombatantRemoved":
+      next.encounter = removeCombatant(s.encounter, ev.data.actor);
+      break;
+    case "TurnStarted": {
+      const e = s.encounter;
+      if (!e) break;
+      const { [ev.data.actor]: _, ...reactions } = e.reaction_used;
+      next.encounter = {
+        ...e,
+        active: ev.data.actor,
+        round: ev.data.round,
+        economy: { ...NO_ECONOMY, movement_left: ev.data.movement, action: true, bonus: true },
+        reaction_used: reactions,
+      };
+      break;
+    }
+    case "MovementSpent":
+      if (s.encounter?.active === ev.data.actor) {
+        next.encounter = { ...s.encounter, economy: { ...s.encounter.economy, movement_left: ev.data.left } };
+      }
+      break;
+    case "ActionUsed": {
+      const e = s.encounter;
+      const d = ev.data;
+      if (!e) break;
+      if (d.kind === "reaction") {
+        const { [d.actor]: _, ...rest } = e.reaction_used;
+        next.encounter = { ...e, reaction_used: d.used ? { ...rest, [d.actor]: true } : rest };
+      } else if (e.active === d.actor) {
+        const economy = { ...e.economy, movement_left: d.movement_left };
+        if (d.kind === "action") Object.assign(economy, { action: !d.used, action_dash: d.used && !!d.dash });
+        else Object.assign(economy, { bonus: !d.used, bonus_dash: d.used && !!d.dash });
+        next.encounter = { ...e, economy };
+      }
+      break;
+    }
+    case "CombatEnded":
+      next.encounter = null;
+      break;
     case "HPChanged":
       next.actors = updateActor(s, ev.data.actor, (a) => ({ ...a, hp: ev.data.hp }));
       break;
@@ -97,6 +153,28 @@ export function applyEvent(s: GameState, ev: GameEvent): GameState {
       break;
   }
   return next;
+}
+
+const NO_ECONOMY = { movement_left: 0, action: false, bonus: false, action_dash: false, bonus_dash: false };
+
+// sortOrder mirrors Encounter.sortOrder on the server: total (waiting last),
+// then bonus, then tie-break roll, then ID.
+export function sortOrder(order: InitEntry[]): InitEntry[] {
+  // Byte-wise like Go's cmp.Compare, unlike localeCompare.
+  const cmp = <T extends number | string>(a: T, b: T) => (a < b ? -1 : a > b ? 1 : 0);
+  return [...order].sort((a, b) => {
+    if ((a.total === null) !== (b.total === null)) return a.total === null ? 1 : -1;
+    return (
+      (a.total !== null && b.total !== null ? cmp(b.total, a.total) : 0) ||
+      cmp(b.bonus, a.bonus) ||
+      cmp(b.tie_break, a.tie_break) ||
+      cmp(a.actor, b.actor)
+    );
+  });
+}
+
+function removeCombatant(e: Encounter | null, actor: ActorID): Encounter | null {
+  return e && { ...e, order: e.order.filter((x) => x.actor !== actor) };
 }
 
 function updateActor(s: GameState, id: ActorID, f: (a: Character) => Character): Record<ActorID, Character> {

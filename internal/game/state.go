@@ -28,13 +28,14 @@ type Cell struct {
 // State is everything the session actor knows about one session. Only the
 // actor goroutine touches it.
 type State struct {
-	ID       string                 `json:"id"`
-	Seq      int64                  `json:"seq"` // last applied event
-	Settings Settings               `json:"settings"`
-	Map      *Map                   `json:"map"` // nil until the DM sets one
-	Tokens   map[TokenID]*Token     `json:"tokens"`
-	Actors   map[ActorID]*Character `json:"actors"` // PCs, NPCs, and monsters
-	Members  map[UserID]*Member     `json:"members"`
+	ID        string                 `json:"id"`
+	Seq       int64                  `json:"seq"` // last applied event
+	Settings  Settings               `json:"settings"`
+	Map       *Map                   `json:"map"` // nil until the DM sets one
+	Tokens    map[TokenID]*Token     `json:"tokens"`
+	Actors    map[ActorID]*Character `json:"actors"` // PCs, NPCs, and monsters
+	Members   map[UserID]*Member     `json:"members"`
+	Encounter *Encounter             `json:"encounter"` // nil outside combat
 }
 
 // Settings are the session's house rules.
@@ -191,6 +192,7 @@ func NewState(id string) *State {
 // decided, so Apply trusts them.
 func (s *State) Apply(ev Event) {
 	s.Seq = ev.Seq
+	s.applyCombat(ev.Data)
 	switch d := ev.Data.(type) {
 	case MemberJoined:
 		m := d.Member

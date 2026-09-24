@@ -6,8 +6,10 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"log/slog"
+	"math/big"
 	"sync"
 	"time"
 
@@ -131,7 +133,7 @@ func (m *Manager) load(id string) (*actor, error) {
 		log:     log,
 		store:   m.store,
 		opts:    m.opts,
-		env:     game.Env{NewID: ids.New},
+		env:     game.Env{NewID: ids.New, Roll: roll},
 		now:     time.Now,
 		retire:  m.retire,
 		state:   state,
@@ -140,6 +142,16 @@ func (m *Manager) load(id string) (*actor, error) {
 		quit:    make(chan struct{}),
 		done:    make(chan struct{}),
 	}, nil
+}
+
+// roll is a fair die. crypto/rand is overkill for fairness, but it's cheap
+// at dice speed and leaves nothing to argue about at the table.
+func roll(sides int) int {
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(sides)))
+	if err != nil {
+		panic(err) // crypto/rand never fails on supported platforms
+	}
+	return int(n.Int64()) + 1
 }
 
 func (m *Manager) retire(a *actor) {

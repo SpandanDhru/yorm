@@ -1,6 +1,7 @@
 import type Konva from "konva";
 import { useEffect, useRef, useState } from "react";
 import { Circle, Group, Image as KImage, Layer, Line, Rect, Shape, Stage, Text } from "react-konva";
+import { pathCost } from "../move";
 import { canControl, cellKey, rectCells, tokenPos, type TableState } from "../store";
 import type { Cell, Rect as CellRect, TerrainKind, Token, TokenID, UserID } from "../types";
 
@@ -78,6 +79,22 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
     // React only repositions the node if its props change, so snap it here.
     const at = moved ? to : from;
     node.position({ x: at.x * CELL, y: at.y * CELL });
+  }
+
+  // The cell a token is being dragged over, and what getting there costs.
+  const [dragging, setDragging] = useState<{ token: TokenID; to: Cell; feet: number | null; over: boolean } | null>(null);
+
+  function dragMove(t: Token, from: Cell, node: Konva.Node) {
+    if (!map) return;
+    const to = {
+      x: clamp(Math.round(node.x() / CELL), 0, map.cols - t.size),
+      y: clamp(Math.round(node.y() / CELL), 0, map.rows - t.size),
+    };
+    if (dragging?.token === t.id && dragging.to.x === to.x && dragging.to.y === to.y) return;
+    const feet = pathCost(map, table.game!.settings.diagonal, t.size, from, to);
+    const e = table.game!.encounter;
+    const over = !!e?.active && e.active === t.actor && feet !== null && feet > e.economy.movement_left;
+    setDragging({ token: t.id, to, feet, over });
   }
 
   // A stroke in progress: shown locally, sent as one command when released.
@@ -172,11 +189,19 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
                   y={pos.y * CELL}
                   draggable={movable}
                   onPointerDown={() => onSelect(t.id)}
+                  onDragMove={(e) => {
+                    e.cancelBubble = true;
+                    dragMove(t, pos, e.target);
+                  }}
                   onDragEnd={(e) => {
                     e.cancelBubble = true; // don't pan the stage
+                    setDragging(null);
                     dropToken(t, pos, e.target);
                   }}
                 >
+                  {g.encounter?.active && g.encounter.active === t.actor && (
+                    <Circle x={px / 2} y={px / 2} radius={px / 2} stroke="#ffd166" strokeWidth={4} dash={[10, 6]} listening={false} />
+                  )}
                   <Circle
                     x={px / 2}
                     y={px / 2}
@@ -226,6 +251,22 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
                 </Group>
               );
             })}
+            {dragging && (
+              <Text
+                x={dragging.to.x * CELL}
+                y={dragging.to.y * CELL - 22}
+                width={CELL * (table.game!.tokens[dragging.token]?.size ?? 1)}
+                align="center"
+                text={dragging.feet === null ? "blocked" : `${dragging.feet} ft`}
+                fontSize={18}
+                fontStyle="bold"
+                fill={dragging.feet === null || dragging.over ? "#ff6b5e" : "#ffffff"}
+                shadowColor="black"
+                shadowBlur={4}
+                shadowOpacity={1}
+                listening={false}
+              />
+            )}
           </Layer>
         </Stage>
       )}

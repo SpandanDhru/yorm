@@ -77,6 +77,33 @@ export interface Member {
   role: Role;
 }
 
+export interface InitEntry {
+  actor: ActorID;
+  total: number | null; // null while waiting for a physical roll
+  roll: number | null;
+  bonus: number;
+  tie_break: number;
+  physical: boolean;
+}
+
+export interface TurnEconomy {
+  movement_left: number;
+  action: boolean; // true = still available
+  bonus: boolean;
+  action_dash: boolean;
+  bonus_dash: boolean;
+}
+
+export interface Encounter {
+  round: number;
+  order: InitEntry[];
+  active: ActorID; // "" while waiting for initiative
+  economy: TurnEconomy;
+  reaction_used: Record<ActorID, boolean>;
+}
+
+export type ActionKind = "action" | "bonus" | "reaction";
+
 export interface GameState {
   id: string;
   seq: number;
@@ -85,6 +112,7 @@ export interface GameState {
   tokens: Record<TokenID, Token>;
   actors: Record<ActorID, Character>;
   members: Record<UserID, Member>;
+  encounter: Encounter | null;
 }
 
 interface EventBase {
@@ -109,6 +137,20 @@ export type GameEvent = EventBase &
     | { name: "HPChanged"; data: { actor: ActorID; hp: HitPoints; delta: number } }
     | { name: "ConditionAdded"; data: { actor: ActorID; condition: Condition } }
     | { name: "ConditionRemoved"; data: { actor: ActorID; name: string } }
+    | { name: "CombatStarted"; data: { order: InitEntry[] } }
+    | {
+        name: "InitiativeSet";
+        data: { actor: ActorID; total: number; roll?: number; bonus: number; tie_break: number; physical: boolean };
+      }
+    | { name: "CombatantRemoved"; data: { actor: ActorID } }
+    | { name: "TurnStarted"; data: { actor: ActorID; round: number; movement: number } }
+    | { name: "TurnEnded"; data: { actor: ActorID } }
+    | { name: "MovementSpent"; data: { actor: ActorID; feet: number; left: number } }
+    | {
+        name: "ActionUsed";
+        data: { actor: ActorID; kind: ActionKind; used: boolean; dash?: boolean; movement_left: number };
+      }
+    | { name: "CombatEnded"; data: Record<string, never> }
   );
 
 export type ServerMsg =

@@ -3,6 +3,7 @@ import { inviteLink, uploadMap, type Seat } from "../api";
 import { freeCell, tokenFor } from "../store";
 import type { GameState, MapInfo, TokenID } from "../types";
 import { CharactersPanel } from "./Characters";
+import { Initiative } from "./Initiative";
 
 interface Props {
   seat: Seat;
@@ -21,7 +22,8 @@ export function Sidebar({ seat, game, selected, command }: Props) {
 
   return (
     <aside className="sidebar">
-      {isDM && <Invite seat={seat} />}
+      <Initiative seat={seat} game={game} command={command} />
+      {isDM && !game.encounter && <Invite seat={seat} />}
 
       {token && !token.actor && (
         <section>

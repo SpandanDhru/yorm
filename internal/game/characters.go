@@ -153,11 +153,19 @@ func decideDeleteCharacter(s *State, cmd Command, _ Env) ([]Payload, error) {
 	if s.Actors[a.Actor] == nil {
 		return nil, reject(CodeInvalidTarget, "no such character")
 	}
+	e := s.Encounter
+	if e != nil && e.Active == a.Actor {
+		return nil, reject(CodeInvalidTarget, "end their turn first")
+	}
 	var evs []Payload
 	if t := s.TokenFor(a.Actor); t != nil {
 		evs = append(evs, TokenRemoved{Token: t.ID})
 	}
-	return append(evs, CharacterDeleted{Actor: a.Actor}), nil
+	evs = append(evs, CharacterDeleted{Actor: a.Actor})
+	if e.index(a.Actor) >= 0 && len(e.Order) == 1 {
+		evs = append(evs, CombatEnded{})
+	}
+	return appendFirstTurn(s, evs), nil // they may have been the last roll we were waiting for
 }
 
 // editable returns the character if user may edit it.

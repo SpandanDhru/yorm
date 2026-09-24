@@ -22,6 +22,8 @@ const (
 	CodeInvalidTarget  = "invalid_target"
 	CodeInvalidCommand = "invalid_command"
 	CodeConflict       = "conflict"
+	CodeNotYourTurn    = "not_your_turn"
+	CodeOutOfMovement  = "out_of_movement"
 	CodeUnavailable    = "unavailable"
 )
 
@@ -39,6 +41,8 @@ func reject(code, msg string) *Reject { return &Reject{Code: code, Message: msg}
 // outside Apply, so generated values end up in events and replay exactly.
 type Env struct {
 	NewID func(prefix string) string
+	// Roll returns a uniformly random integer from 1 to sides.
+	Roll func(sides int) int
 }
 
 type decider func(s *State, cmd Command, env Env) ([]Payload, error)
@@ -58,6 +62,16 @@ var deciders = map[string]decider{
 	"set_temp_hp":      decideSetTempHP,
 	"add_condition":    decideAddCondition,
 	"remove_condition": decideRemoveCondition,
+
+	"start_combat":       decideStartCombat,
+	"set_initiative":     decideSetInitiative,
+	"begin_combat":       decideBeginCombat,
+	"join_combat":        decideJoinCombat,
+	"remove_from_combat": decideRemoveFromCombat,
+	"end_turn":           decideEndTurn,
+	"prev_turn":          decidePrevTurn,
+	"use_action":         decideUseAction,
+	"end_combat":         decideEndCombat,
 }
 
 // Decide validates cmd against s and returns the events it produces. The
@@ -307,6 +321,9 @@ func decideMoveToken(s *State, cmd Command, _ Env) ([]Payload, error) {
 	}
 	if s.Map == nil || !s.Map.InBounds(a.To, t.Size) {
 		return nil, reject(CodeInvalidTarget, "target is off the map")
+	}
+	if evs, err := combatMove(s, cmd.By, t, a.To); evs != nil || err != nil {
+		return evs, err
 	}
 	// The DM can put a token anywhere; everyone else has to walk.
 	if !s.IsDM(cmd.By) {

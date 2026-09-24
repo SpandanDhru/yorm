@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyEvent, initialTable, reducer, tokenPos, type TableState } from "./store";
+import { applyEvent, initialTable, reducer, sortOrder, tokenPos, type TableState } from "./store";
 import type { Character, GameEvent, GameState, Token } from "./types";
 
 const rogue: Token = { id: "tok_1", label: "Rogue", color: "#aa0000", pos: { x: 1, y: 1 }, size: 1, controllers: ["usr_kai"] };
@@ -12,6 +12,7 @@ const base: GameState = {
   tokens: { tok_1: rogue },
   actors: {},
   members: {},
+  encounter: null,
 };
 
 function ev(seq: number, e: Omit<GameEvent, "seq" | "by" | "at">): GameEvent {
@@ -119,5 +120,43 @@ describe("reducer", () => {
     expect(tokenPos(s, "tok_1")).toEqual({ x: 3, y: 3 });
     s = reducer(s, { type: "disconnected" });
     expect(tokenPos(s, "tok_1")).toEqual({ x: 1, y: 1 });
+  });
+});
+
+describe("combat", () => {
+  const entry = (actor: string, total: number | null, bonus = 0, tie_break = 0) => ({
+    actor, total, roll: null, bonus, tie_break, physical: false,
+  });
+
+  it("sorts initiative like the server", () => {
+    const got = sortOrder([
+      entry("waiting", null, 9),
+      entry("low", 5),
+      entry("tie-low-bonus", 15, 1, 20),
+      entry("tie-high-bonus", 15, 3, 1),
+      entry("tie-same-bonus-b", 15, 1, 12),
+      entry("high", 22, -1),
+    ]).map((e) => e.actor);
+    expect(got).toEqual(["high", "tie-high-bonus", "tie-low-bonus", "tie-same-bonus-b", "low", "waiting"]);
+  });
+
+  it("runs turns, movement, and actions", () => {
+    let s = applyEvent(base, ev(4, { name: "CombatStarted", data: { order: [entry("a", 12, 1, 4), entry("b", null, 2, 9)] } }));
+    expect(s.encounter?.order.map((e) => e.actor)).toEqual(["a", "b"]);
+    s = applyEvent(s, ev(5, { name: "InitiativeSet", data: { actor: "b", total: 18, roll: 16, bonus: 2, tie_break: 9, physical: true } }));
+    expect(s.encounter?.order.map((e) => e.actor)).toEqual(["b", "a"]);
+    s = applyEvent(s, ev(6, { name: "TurnStarted", data: { actor: "b", round: 1, movement: 30 } }));
+    s = applyEvent(s, ev(7, { name: "MovementSpent", data: { actor: "b", feet: 10, left: 20 } }));
+    s = applyEvent(s, ev(8, { name: "ActionUsed", data: { actor: "b", kind: "action", used: true, dash: true, movement_left: 50 } }));
+    s = applyEvent(s, ev(9, { name: "ActionUsed", data: { actor: "a", kind: "reaction", used: true, movement_left: 0 } }));
+    expect(s.encounter).toMatchObject({
+      active: "b",
+      economy: { movement_left: 50, action: false, action_dash: true, bonus: true },
+      reaction_used: { a: true },
+    });
+    s = applyEvent(s, ev(10, { name: "TurnStarted", data: { actor: "a", round: 1, movement: 25 } }));
+    expect(s.encounter?.reaction_used).toEqual({});
+    s = applyEvent(s, ev(11, { name: "CombatEnded", data: {} }));
+    expect(s.encounter).toBeNull();
   });
 });

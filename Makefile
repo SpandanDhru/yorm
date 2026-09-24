@@ -2,7 +2,7 @@ export DATABASE_URL ?= postgres://yorm:yorm@localhost:5432/yorm?sslmode=disable
 export YORM_TOKEN_SECRET ?= dev-only-secret-do-not-use-in-prod-0123456789
 export YORM_ALLOWED_ORIGINS ?= localhost:5173
 
-.PHONY: db-up db-down run web-install web-dev web-build web-test token test race integration fuzz lint
+.PHONY: db-up db-down run web-install web-dev web-build web-test fixtures token test race integration fuzz lint
 
 db-up:
 	docker compose up -d --wait postgres
@@ -25,6 +25,10 @@ web-build:
 
 web-test:
 	cd web && npm test
+
+# Rewrite web/src/testdata from the Go test cases the frontend shares.
+fixtures:
+	UPDATE_FIXTURES=1 go test -run Fixture ./internal/game
 
 # Usage: make token SESSION=demo USER_ID=dm1 ROLE=dm
 token:

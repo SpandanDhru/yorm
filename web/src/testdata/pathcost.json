@@ -1,0 +1,442 @@
+[
+  {
+    "name": "stay put",
+    "rows": [
+      "......",
+      "......",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 1,
+      "y": 1
+    },
+    "to": {
+      "x": 1,
+      "y": 1
+    },
+    "limit": -1,
+    "feet": 0,
+    "ok": true
+  },
+  {
+    "name": "straight line",
+    "rows": [
+      "......",
+      "......",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 5,
+      "y": 0
+    },
+    "limit": -1,
+    "feet": 25,
+    "ok": true
+  },
+  {
+    "name": "diagonal is 5 ft",
+    "rows": [
+      "......",
+      "......",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 3,
+      "y": 3
+    },
+    "limit": -1,
+    "feet": 15,
+    "ok": true
+  },
+  {
+    "name": "5-10-5: 3 diagonals = 20 ft",
+    "rows": [
+      "......",
+      "......",
+      "......",
+      "......"
+    ],
+    "rule": "5-10-5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 3,
+      "y": 3
+    },
+    "limit": -1,
+    "feet": 20,
+    "ok": true
+  },
+  {
+    "name": "5-10-5: 2 diagonals = 15 ft",
+    "rows": [
+      "......",
+      "......",
+      "......",
+      "......"
+    ],
+    "rule": "5-10-5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 2,
+      "y": 2
+    },
+    "limit": -1,
+    "feet": 15,
+    "ok": true
+  },
+  {
+    "name": "5-10-5: knight move = 10 ft",
+    "rows": [
+      "......",
+      "......",
+      "......",
+      "......"
+    ],
+    "rule": "5-10-5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 2,
+      "y": 1
+    },
+    "limit": -1,
+    "feet": 10,
+    "ok": true
+  },
+  {
+    "name": "walk around a wall",
+    "rows": [
+      ".#....",
+      ".#....",
+      ".#....",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 2,
+      "y": 0
+    },
+    "limit": -1,
+    "feet": 40,
+    "ok": true
+  },
+  {
+    "name": "sealed off",
+    "rows": [
+      ".#....",
+      "##....",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 3,
+      "y": 3
+    },
+    "limit": -1,
+    "feet": 0,
+    "ok": false
+  },
+  {
+    "name": "no squeezing diagonally past a corner",
+    "rows": [
+      ".#....",
+      "#.....",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 1,
+      "y": 1
+    },
+    "limit": -1,
+    "feet": 0,
+    "ok": false
+  },
+  {
+    "name": "destination is a wall",
+    "rows": [
+      "...#..",
+      "......",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 3,
+      "y": 0
+    },
+    "limit": -1,
+    "feet": 0,
+    "ok": false
+  },
+  {
+    "name": "difficult terrain doubles",
+    "rows": [
+      ".::...",
+      "######",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 3,
+      "y": 0
+    },
+    "limit": -1,
+    "feet": 25,
+    "ok": true
+  },
+  {
+    "name": "water doubles too",
+    "rows": [
+      ".~....",
+      "######",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 2,
+      "y": 0
+    },
+    "limit": -1,
+    "feet": 15,
+    "ok": true
+  },
+  {
+    "name": "cheaper to go around difficult terrain",
+    "rows": [
+      "......",
+      ".:::..",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 1
+    },
+    "to": {
+      "x": 4,
+      "y": 1
+    },
+    "limit": -1,
+    "feet": 20,
+    "ok": true
+  },
+  {
+    "name": "hazards cost nothing extra",
+    "rows": [
+      ".!!!..",
+      "......",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 4,
+      "y": 0
+    },
+    "limit": -1,
+    "feet": 20,
+    "ok": true
+  },
+  {
+    "name": "large token fits through a 2-wide gap",
+    "rows": [
+      "......",
+      "#..###",
+      "#..###",
+      "......"
+    ],
+    "rule": "5",
+    "size": 2,
+    "from": {
+      "x": 1,
+      "y": 0
+    },
+    "to": {
+      "x": 1,
+      "y": 2
+    },
+    "limit": -1,
+    "feet": 10,
+    "ok": true
+  },
+  {
+    "name": "large token blocked by a 1-wide gap",
+    "rows": [
+      "......",
+      "#.####",
+      "#.####",
+      "......"
+    ],
+    "rule": "5",
+    "size": 2,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 0,
+      "y": 2
+    },
+    "limit": -1,
+    "feet": 0,
+    "ok": false
+  },
+  {
+    "name": "large token pays double if any of it is difficult",
+    "rows": [
+      "......",
+      "...:..",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 2,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 2,
+      "y": 0
+    },
+    "limit": -1,
+    "feet": 15,
+    "ok": true
+  },
+  {
+    "name": "reachable within limit",
+    "rows": [
+      "......",
+      "......",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 5,
+      "y": 0
+    },
+    "limit": 25,
+    "feet": 25,
+    "ok": true
+  },
+  {
+    "name": "beyond limit",
+    "rows": [
+      "......",
+      "......",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 5,
+      "y": 0
+    },
+    "limit": 20,
+    "feet": 0,
+    "ok": false
+  },
+  {
+    "name": "off the map",
+    "rows": [
+      "......",
+      "......",
+      "......",
+      "......"
+    ],
+    "rule": "5",
+    "size": 1,
+    "from": {
+      "x": 0,
+      "y": 0
+    },
+    "to": {
+      "x": 6,
+      "y": 0
+    },
+    "limit": -1,
+    "feet": 0,
+    "ok": false
+  }
+]
