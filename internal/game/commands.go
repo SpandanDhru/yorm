@@ -50,6 +50,14 @@ var deciders = map[string]decider{
 	"place_token":  decidePlaceToken,
 	"move_token":   decideMoveToken,
 	"remove_token": decideRemoveToken,
+
+	"create_character": decideCreateCharacter,
+	"update_character": decideUpdateCharacter,
+	"delete_character": decideDeleteCharacter,
+	"adjust_hp":        decideAdjustHP,
+	"set_temp_hp":      decideSetTempHP,
+	"add_condition":    decideAddCondition,
+	"remove_condition": decideRemoveCondition,
 }
 
 // Decide validates cmd against s and returns the events it produces. The
@@ -201,6 +209,7 @@ func decideSetSettings(s *State, cmd Command, _ Env) ([]Payload, error) {
 }
 
 type placeTokenArgs struct {
+	Actor       ActorID  `json:"actor"` // optional: the character the token stands for
 	Label       string   `json:"label"`
 	Color       string   `json:"color"`
 	At          Cell     `json:"at"`
@@ -212,6 +221,9 @@ var colorRE = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
 const defaultColor = "#8a8f98"
 
+// kindColors are the default token colors for character tokens.
+var kindColors = map[ActorKind]string{KindPC: "#2f6fd1", KindNPC: "#8a8f98", KindMonster: "#c0392b"}
+
 func decidePlaceToken(s *State, cmd Command, env Env) ([]Payload, error) {
 	if !s.IsDM(cmd.By) {
 		return nil, reject(CodeForbidden, "only the DM can place tokens")
@@ -219,6 +231,24 @@ func decidePlaceToken(s *State, cmd Command, env Env) ([]Payload, error) {
 	var a placeTokenArgs
 	if err := decodeArgs(cmd, &a); err != nil {
 		return nil, err
+	}
+	if a.Actor != "" {
+		c := s.Actors[a.Actor]
+		if c == nil {
+			return nil, reject(CodeInvalidTarget, "no such character")
+		}
+		if s.TokenFor(a.Actor) != nil {
+			return nil, reject(CodeInvalidTarget, c.Name+" already has a token")
+		}
+		if len(a.Controllers) > 0 {
+			return nil, reject(CodeInvalidTarget, "a character's token is controlled by the character's controllers")
+		}
+		if a.Label == "" {
+			a.Label = c.Name
+		}
+		if a.Color == "" {
+			a.Color = kindColors[c.Kind]
+		}
 	}
 	a.Label = strings.TrimSpace(a.Label)
 	if a.Label == "" || utf8.RuneCountInString(a.Label) > maxLabelLen {
@@ -252,7 +282,7 @@ func decidePlaceToken(s *State, cmd Command, env Env) ([]Payload, error) {
 		}
 	}
 	t := Token{
-		ID: TokenID(env.NewID("tok")), Label: a.Label, Color: a.Color,
+		ID: TokenID(env.NewID("tok")), Actor: a.Actor, Label: a.Label, Color: a.Color,
 		Pos: a.At, Size: a.Size, Controllers: controllers,
 	}
 	return []Payload{TokenPlaced{Token: t}}, nil

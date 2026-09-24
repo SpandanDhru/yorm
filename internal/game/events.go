@@ -64,6 +64,36 @@ type SettingsChanged struct {
 	Settings Settings `json:"settings"`
 }
 
+type CharacterCreated struct {
+	Character Character `json:"character"`
+}
+
+// CharacterUpdated replaces the card's stats. HP and conditions change
+// through their own events.
+type CharacterUpdated struct {
+	Character Character `json:"character"`
+}
+
+type CharacterDeleted struct {
+	Actor ActorID `json:"actor"`
+}
+
+type HPChanged struct {
+	Actor ActorID   `json:"actor"`
+	HP    HitPoints `json:"hp"`    // after the change
+	Delta int       `json:"delta"` // what was asked: negative for damage; 0 for a temp HP change
+}
+
+type ConditionAdded struct {
+	Actor     ActorID   `json:"actor"`
+	Condition Condition `json:"condition"`
+}
+
+type ConditionRemoved struct {
+	Actor ActorID `json:"actor"`
+	Name  string  `json:"name"`
+}
+
 type TokenPlaced struct {
 	Token Token `json:"token"`
 }
@@ -78,22 +108,34 @@ type TokenRemoved struct {
 	Token TokenID `json:"token"`
 }
 
-func (MemberJoined) EventName() string    { return "MemberJoined" }
-func (MapSet) EventName() string          { return "MapSet" }
-func (CellsPainted) EventName() string    { return "CellsPainted" }
-func (SettingsChanged) EventName() string { return "SettingsChanged" }
-func (TokenPlaced) EventName() string     { return "TokenPlaced" }
-func (TokenMoved) EventName() string      { return "TokenMoved" }
-func (TokenRemoved) EventName() string    { return "TokenRemoved" }
+func (MemberJoined) EventName() string     { return "MemberJoined" }
+func (MapSet) EventName() string           { return "MapSet" }
+func (CellsPainted) EventName() string     { return "CellsPainted" }
+func (SettingsChanged) EventName() string  { return "SettingsChanged" }
+func (TokenPlaced) EventName() string      { return "TokenPlaced" }
+func (TokenMoved) EventName() string       { return "TokenMoved" }
+func (TokenRemoved) EventName() string     { return "TokenRemoved" }
+func (CharacterCreated) EventName() string { return "CharacterCreated" }
+func (CharacterUpdated) EventName() string { return "CharacterUpdated" }
+func (CharacterDeleted) EventName() string { return "CharacterDeleted" }
+func (HPChanged) EventName() string        { return "HPChanged" }
+func (ConditionAdded) EventName() string   { return "ConditionAdded" }
+func (ConditionRemoved) EventName() string { return "ConditionRemoved" }
 
 var payloads = map[string]func([]byte) (Payload, error){
-	"MemberJoined":    decode[MemberJoined],
-	"MapSet":          decode[MapSet],
-	"CellsPainted":    decode[CellsPainted],
-	"SettingsChanged": decode[SettingsChanged],
-	"TokenPlaced":     decode[TokenPlaced],
-	"TokenMoved":      decode[TokenMoved],
-	"TokenRemoved":    decode[TokenRemoved],
+	"MemberJoined":     decode[MemberJoined],
+	"MapSet":           decode[MapSet],
+	"CellsPainted":     decode[CellsPainted],
+	"SettingsChanged":  decode[SettingsChanged],
+	"TokenPlaced":      decode[TokenPlaced],
+	"TokenMoved":       decode[TokenMoved],
+	"TokenRemoved":     decode[TokenRemoved],
+	"CharacterCreated": decode[CharacterCreated],
+	"CharacterUpdated": decode[CharacterUpdated],
+	"CharacterDeleted": decode[CharacterDeleted],
+	"HPChanged":        decode[HPChanged],
+	"ConditionAdded":   decode[ConditionAdded],
+	"ConditionRemoved": decode[ConditionRemoved],
 }
 
 func decode[T Payload](data []byte) (Payload, error) {

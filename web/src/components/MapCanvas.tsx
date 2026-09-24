@@ -1,7 +1,7 @@
 import type Konva from "konva";
 import { useEffect, useRef, useState } from "react";
 import { Circle, Group, Image as KImage, Layer, Line, Rect, Shape, Stage, Text } from "react-konva";
-import { cellKey, rectCells, tokenPos, type TableState } from "../store";
+import { canControl, cellKey, rectCells, tokenPos, type TableState } from "../store";
 import type { Cell, Rect as CellRect, TerrainKind, Token, TokenID, UserID } from "../types";
 
 const CELL = 64; // px per grid cell at zoom 1
@@ -158,15 +158,19 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
           </Layer>
           <Layer listening={!painting}>
             {Object.values(table.game!.tokens).map((t) => {
+              const g = table.game!;
               const pos = tokenPos(table, t.id) ?? t.pos;
-              const mine = t.controllers.includes(me);
+              const actor = t.actor ? g.actors[t.actor] : undefined;
+              const label = actor?.name ?? t.label;
+              const movable = canControl(g, me, t);
+              const mine = movable && !isDM;
               const px = t.size * CELL;
               return (
                 <Group
                   key={t.id}
                   x={pos.x * CELL}
                   y={pos.y * CELL}
-                  draggable={isDM || mine}
+                  draggable={movable}
                   onPointerDown={() => onSelect(t.id)}
                   onDragEnd={(e) => {
                     e.cancelBubble = true; // don't pan the stage
@@ -185,7 +189,7 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
                     shadowOpacity={0.5}
                   />
                   <Text
-                    text={initials(t.label)}
+                    text={initials(label)}
                     width={px}
                     height={px}
                     align="center"
@@ -195,8 +199,19 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
                     fill="#ffffff"
                     listening={false}
                   />
+                  {actor && (
+                    <Rect
+                      x={6}
+                      y={-2}
+                      width={(px - 12) * Math.max(0, Math.min(1, actor.hp.current / actor.hp.max))}
+                      height={6}
+                      cornerRadius={3}
+                      fill={actor.hp.current === 0 ? "#555" : actor.hp.current * 2 <= actor.hp.max ? "#e0a030" : "#4caf7a"}
+                      listening={false}
+                    />
+                  )}
                   <Text
-                    text={t.label}
+                    text={label}
                     y={px - 2}
                     width={px}
                     align="center"

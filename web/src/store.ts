@@ -1,7 +1,7 @@
 // Client state: the server's state as last seen, plus this client's moves
 // that are still waiting for the server's answer. Holds no game rules; the
 // server validates everything.
-import type { Cell, GameEvent, GameState, Rect, TokenID } from "./types";
+import type { ActorID, Cell, Character, GameEvent, GameState, Rect, Token, TokenID, UserID } from "./types";
 
 export const cellKey = (c: Cell) => `${c.x},${c.y}`;
 
@@ -74,8 +74,68 @@ export function applyEvent(s: GameState, ev: GameEvent): GameState {
       next.tokens = rest;
       break;
     }
+    case "CharacterCreated":
+    case "CharacterUpdated":
+      next.actors = { ...s.actors, [ev.data.character.id]: ev.data.character };
+      break;
+    case "CharacterDeleted": {
+      const { [ev.data.actor]: _, ...rest } = s.actors;
+      next.actors = rest;
+      break;
+    }
+    case "HPChanged":
+      next.actors = updateActor(s, ev.data.actor, (a) => ({ ...a, hp: ev.data.hp }));
+      break;
+    case "ConditionAdded":
+      next.actors = updateActor(s, ev.data.actor, (a) => ({ ...a, conditions: [...a.conditions, ev.data.condition] }));
+      break;
+    case "ConditionRemoved":
+      next.actors = updateActor(s, ev.data.actor, (a) => ({
+        ...a,
+        conditions: a.conditions.filter((c) => c.name !== ev.data.name),
+      }));
+      break;
   }
   return next;
+}
+
+function updateActor(s: GameState, id: ActorID, f: (a: Character) => Character): Record<ActorID, Character> {
+  const a = s.actors[id];
+  return a ? { ...s.actors, [id]: f(a) } : s.actors;
+}
+
+// canControl mirrors game.State.CanControl: may user move token t?
+export function canControl(g: GameState, user: UserID, t: Token): boolean {
+  if (g.members[user]?.role === "dm" || t.controllers.includes(user)) return true;
+  return !!t.actor && !!g.actors[t.actor]?.controllers.includes(user);
+}
+
+// canEdit mirrors game.State.CanEdit: may user change character a?
+export function canEdit(g: GameState, user: UserID, a: Character): boolean {
+  return g.members[user]?.role === "dm" || a.controllers.includes(user);
+}
+
+export function tokenFor(g: GameState, actor: ActorID): Token | undefined {
+  return Object.values(g.tokens).find((t) => t.actor === actor);
+}
+
+// freeCell finds the first spot, row by row, where a token of the given
+// size overlaps no other token or wall.
+export function freeCell(game: GameState, size: number): Cell | null {
+  const map = game.map;
+  if (!map) return null;
+  const taken = new Set<string>(Object.keys(map.terrain).filter((k) => map.terrain[k] === "wall"));
+  for (const t of Object.values(game.tokens)) {
+    for (let dx = 0; dx < t.size; dx++) for (let dy = 0; dy < t.size; dy++) taken.add(`${t.pos.x + dx},${t.pos.y + dy}`);
+  }
+  for (let y = 0; y + size <= map.rows; y++) {
+    for (let x = 0; x + size <= map.cols; x++) {
+      let free = true;
+      for (let dx = 0; dx < size && free; dx++) for (let dy = 0; dy < size && free; dy++) free = !taken.has(`${x + dx},${y + dy}`);
+      if (free) return { x, y };
+    }
+  }
+  return { x: 0, y: 0 }; // full map: stack on the corner, the DM can drag it
 }
 
 function without<T>(rec: Record<string, T>, key: string | undefined): Record<string, T> {

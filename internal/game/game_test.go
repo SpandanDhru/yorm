@@ -235,6 +235,15 @@ func TestPayloadRoundTrip(t *testing.T) {
 		TokenPlaced{Token: Token{ID: "t", Label: "T", Color: "#123456", Pos: Cell{1, 2}, Size: 2, Controllers: []UserID{kai}}},
 		TokenMoved{Token: "t", From: Cell{1, 2}, To: Cell{3, 4}},
 		TokenRemoved{Token: "t"},
+		CharacterCreated{Character: Character{
+			ID: "a", Kind: KindPC, Name: "Kai", Class: "Rogue", Level: 3, AC: 15, Speed: 30, InitBonus: 3,
+			HP: HitPoints{Current: 20, Max: 24, Temp: 2}, Conditions: []Condition{{Name: "Prone"}}, Controllers: []UserID{kai}, RollsOwnDice: true,
+		}},
+		CharacterUpdated{Character: Character{ID: "a", Kind: KindMonster, Name: "Goblin", Conditions: []Condition{}, Controllers: []UserID{}}},
+		CharacterDeleted{Actor: "a"},
+		HPChanged{Actor: "a", HP: HitPoints{Current: 3, Max: 7}, Delta: -4},
+		ConditionAdded{Actor: "a", Condition: Condition{Name: "Poisoned", Source: "Giant spider"}},
+		ConditionRemoved{Actor: "a", Name: "Poisoned"},
 	}
 	if len(all) != len(payloads) {
 		t.Fatalf("test covers %d payloads, registry has %d", len(all), len(payloads))
@@ -291,6 +300,19 @@ func TestReplayMatchesLiveState(t *testing.T) {
 	run(cmd(dm, "place_token", `{"label":"Goblin","at":{"x":5,"y":5}}`))
 	for id := range live.Tokens {
 		run(cmd(dm, "move_token", `{"token":"`+string(id)+`","to":{"x":3,"y":3}}`))
+	}
+	run(cmd(kai, "create_character", `{"name":"Kai","max_hp":24,"speed":30}`))
+	run(cmd(dm, "create_character", `{"name":"Ogre","max_hp":59}`))
+	for id, c := range live.Actors {
+		a := `{"actor":"` + string(id) + `"`
+		run(cmd(dm, "place_token", a+`,"at":{"x":1,"y":1}}`))
+		run(cmd(dm, "adjust_hp", a+`,"delta":-7}`))
+		run(cmd(dm, "set_temp_hp", a+`,"temp":5}`))
+		run(cmd(dm, "add_condition", a+`,"name":"Prone"}`))
+		run(cmd(dm, "update_character", a+`,"ac":17}`))
+		if c.Name == "Ogre" {
+			run(cmd(dm, "delete_character", a+`}`))
+		}
 	}
 
 	replayed := NewState("ses_1")

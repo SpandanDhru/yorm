@@ -313,3 +313,125 @@ label.inline {
 .painting {
   cursor: crosshair;
 }
+
+.cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.card-character {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.card-character.open {
+  border-color: var(--accent);
+}
+
+.card-head {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.3rem 0.5rem;
+  padding: 0.5rem 0.6rem;
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+  text-align: left;
+}
+
+.card-name {
+  font-weight: 600;
+}
+
+.card-stats {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.card-body {
+  padding: 0 0.6rem 0.6rem;
+}
+
+form.card-body {
+  padding-top: 0.6rem;
+}
+
+.card-body p {
+  margin: 0;
+}
+
+.hpbar {
+  grid-column: 1 / -1;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.hpbar-fill {
+  display: block;
+  height: 100%;
+}
+
+.hp-healthy {
+  background: var(--ok);
+}
+.hp-bloodied {
+  background: #e0a030;
+}
+.hp-down {
+  background: #555;
+}
+
+.tag-pc {
+  background: #2f6fd1;
+  color: white;
+}
+.tag-npc {
+  background: #8a8f98;
+  color: white;
+}
+.tag-monster {
+  background: var(--danger);
+  color: white;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--border);
+  font-size: 0.85rem;
+}
+
+.chip button {
+  padding: 0 0.2rem;
+  background: transparent;
+  color: var(--muted);
+}
+
+.row > button {
+  flex: none;
+}
+
+.hp-row input {
+  min-width: 4.5rem;
+}
+
+.hp-row button {
+  padding-inline: 0.55rem;
+}

@@ -2,6 +2,7 @@
 
 export type UserID = string;
 export type TokenID = string;
+export type ActorID = string;
 export type Role = "dm" | "player" | "spectator";
 
 export interface Cell {
@@ -34,11 +35,40 @@ export interface Rect {
 
 export interface Token {
   id: TokenID;
+  actor?: ActorID;
   label: string;
   color: string;
   pos: Cell;
   size: number;
   controllers: UserID[];
+}
+
+export type ActorKind = "pc" | "npc" | "monster";
+
+export interface HitPoints {
+  current: number;
+  max: number;
+  temp: number;
+}
+
+export interface Condition {
+  name: string;
+  source?: string;
+}
+
+export interface Character {
+  id: ActorID;
+  kind: ActorKind;
+  name: string;
+  class: string;
+  level: number;
+  ac: number;
+  speed: number;
+  init_bonus: number;
+  hp: HitPoints;
+  conditions: Condition[];
+  controllers: UserID[];
+  rolls_own_dice: boolean;
 }
 
 export interface Member {
@@ -53,6 +83,7 @@ export interface GameState {
   settings: Settings;
   map: MapInfo | null;
   tokens: Record<TokenID, Token>;
+  actors: Record<ActorID, Character>;
   members: Record<UserID, Member>;
 }
 
@@ -72,6 +103,12 @@ export type GameEvent = EventBase &
     | { name: "TokenPlaced"; data: { token: Token } }
     | { name: "TokenMoved"; data: { token: TokenID; from: Cell; to: Cell } }
     | { name: "TokenRemoved"; data: { token: TokenID } }
+    | { name: "CharacterCreated"; data: { character: Character } }
+    | { name: "CharacterUpdated"; data: { character: Character } }
+    | { name: "CharacterDeleted"; data: { actor: ActorID } }
+    | { name: "HPChanged"; data: { actor: ActorID; hp: HitPoints; delta: number } }
+    | { name: "ConditionAdded"; data: { actor: ActorID; condition: Condition } }
+    | { name: "ConditionRemoved"; data: { actor: ActorID; name: string } }
   );
 
 export type ServerMsg =

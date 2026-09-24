@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyEvent, initialTable, reducer, tokenPos, type TableState } from "./store";
-import type { GameEvent, GameState, Token } from "./types";
+import type { Character, GameEvent, GameState, Token } from "./types";
 
 const rogue: Token = { id: "tok_1", label: "Rogue", color: "#aa0000", pos: { x: 1, y: 1 }, size: 1, controllers: ["usr_kai"] };
 
@@ -10,6 +10,7 @@ const base: GameState = {
   settings: { diagonal: "5" },
   map: { id: "map_1", image_url: "/uploads/m.png", background: "#e8e0cc", cols: 10, rows: 10, cell_feet: 5, terrain: { "0,0": "wall" } },
   tokens: { tok_1: rogue },
+  actors: {},
   members: {},
 };
 
@@ -47,6 +48,24 @@ describe("applyEvent", () => {
     s = applyEvent(s, ev(5, { name: "CellsPainted", data: { terrain: "clear", cells: [{ x: 0, y: 0 }, { x: 2, y: 1 }] } }));
     s = applyEvent(s, ev(6, { name: "CellsPainted", data: { terrain: "hazard", cells: [{ x: 9, y: 9 }] } }));
     expect(s.map?.terrain).toEqual({ "1,0": "water", "2,0": "water", "1,1": "water", "9,9": "hazard" });
+    expect(base).toEqual(frozen);
+  });
+
+  it("tracks characters, HP, and conditions", () => {
+    const kai: Character = {
+      id: "act_kai", kind: "pc", name: "Kai", class: "Rogue", level: 3, ac: 15, speed: 30, init_bonus: 3,
+      hp: { current: 24, max: 24, temp: 0 }, conditions: [], controllers: ["usr_kai"], rolls_own_dice: false,
+    };
+    const frozen = structuredClone(base);
+    let s = applyEvent(base, ev(4, { name: "CharacterCreated", data: { character: kai } }));
+    s = applyEvent(s, ev(5, { name: "HPChanged", data: { actor: "act_kai", hp: { current: 17, max: 24, temp: 0 }, delta: -7 } }));
+    s = applyEvent(s, ev(6, { name: "ConditionAdded", data: { actor: "act_kai", condition: { name: "Prone" } } }));
+    s = applyEvent(s, ev(7, { name: "ConditionAdded", data: { actor: "act_kai", condition: { name: "Poisoned", source: "Spider" } } }));
+    s = applyEvent(s, ev(8, { name: "ConditionRemoved", data: { actor: "act_kai", name: "Prone" } }));
+    s = applyEvent(s, ev(9, { name: "CharacterUpdated", data: { character: { ...s.actors.act_kai!, ac: 16 } } }));
+    expect(s.actors.act_kai).toMatchObject({ ac: 16, hp: { current: 17 }, conditions: [{ name: "Poisoned", source: "Spider" }] });
+    s = applyEvent(s, ev(10, { name: "CharacterDeleted", data: { actor: "act_kai" } }));
+    expect(s.actors).toEqual({});
     expect(base).toEqual(frozen);
   });
 

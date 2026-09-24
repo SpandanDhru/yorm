@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from "react";
 import { inviteLink, uploadMap, type Seat } from "../api";
-import type { Cell, GameState, MapInfo, TokenID } from "../types";
+import { freeCell, tokenFor } from "../store";
+import type { GameState, MapInfo, TokenID } from "../types";
+import { CharactersPanel } from "./Characters";
 
 interface Props {
   seat: Seat;
@@ -9,8 +11,11 @@ interface Props {
   command(name: string, args: unknown): void;
 }
 
+type Tab = "characters" | "map";
+
 export function Sidebar({ seat, game, selected, command }: Props) {
   const isDM = seat.role === "dm";
+  const [tab, setTab] = useState<Tab>("characters");
   const token = selected ? game.tokens[selected] : undefined;
   const members = Object.values(game.members).sort((a, b) => a.display_name.localeCompare(b.display_name));
 
@@ -18,24 +23,11 @@ export function Sidebar({ seat, game, selected, command }: Props) {
     <aside className="sidebar">
       {isDM && <Invite seat={seat} />}
 
-      <section>
-        <h3>At the table</h3>
-        <ul className="list">
-          {members.map((m) => (
-            <li key={m.user_id}>
-              {m.display_name}
-              {m.role === "dm" && <span className="tag">DM</span>}
-              {m.user_id === seat.user && <span className="muted"> (you)</span>}
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      {token && (
+      {token && !token.actor && (
         <section>
           <h3>{token.label}</h3>
           <p className="muted">
-            Cell {token.pos.x + 1}, {token.pos.y + 1} · controlled by{" "}
+            Cell {token.pos.x + 1}, {token.pos.y + 1} · moved by{" "}
             {token.controllers.map((u) => game.members[u]?.display_name ?? u).join(", ") || "the DM"}
           </p>
           {isDM && (
@@ -46,8 +38,46 @@ export function Sidebar({ seat, game, selected, command }: Props) {
         </section>
       )}
 
-      {isDM && game.map && <AddToken game={game} command={command} />}
-      {isDM && <MapPanel seat={seat} game={game} command={command} />}
+      {isDM && (
+        <div className="tabs" role="tablist">
+          <button role="tab" aria-selected={tab === "characters"} onClick={() => setTab("characters")}>
+            Characters
+          </button>
+          <button role="tab" aria-selected={tab === "map"} onClick={() => setTab("map")}>
+            Map &amp; tokens
+          </button>
+        </div>
+      )}
+
+      {tab === "characters" && (
+        <>
+          <CharactersPanel seat={seat} game={game} command={command} focus={token?.actor ?? null} />
+          {token?.actor && isDM && (
+            <button className="secondary" onClick={() => command("remove_token", { token: token.id })}>
+              Remove {token.label}'s token from the map
+            </button>
+          )}
+          <section>
+            <h3>At the table</h3>
+            <ul className="list">
+              {members.map((m) => (
+                <li key={m.user_id}>
+                  {m.display_name}
+                  {m.role === "dm" && <span className="tag">DM</span>}
+                  {m.user_id === seat.user && <span className="muted"> (you)</span>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        </>
+      )}
+
+      {tab === "map" && isDM && (
+        <>
+          {game.map && <AddToken game={game} command={command} />}
+          <MapPanel seat={seat} game={game} command={command} />
+        </>
+      )}
     </aside>
   );
 }
@@ -84,28 +114,42 @@ const SIZES = [
 ];
 
 function AddToken({ game, command }: { game: GameState; command: Props["command"] }) {
+  const [actor, setActor] = useState("");
   const [label, setLabel] = useState("");
   const [color, setColor] = useState("#c0392b");
   const [size, setSize] = useState(1);
   const [controller, setController] = useState("");
   const players = Object.values(game.members).filter((m) => m.role === "player");
+  const unplaced = Object.values(game.actors).filter((a) => !tokenFor(game, a.id));
 
   function submit(e: FormEvent) {
     e.preventDefault();
     const at = freeCell(game, size);
     if (!at) return;
-    command("place_token", { label, color, size, at, controllers: controller ? [controller] : [] });
+    if (actor) command("place_token", { actor, size, at });
+    else command("place_token", { label, color, size, at, controllers: controller ? [controller] : [] });
     setLabel("");
+    setActor("");
   }
 
   return (
     <section>
       <h3>Add token</h3>
       <form className="stack" onSubmit={submit}>
-        <div className="row">
-          <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Label" maxLength={32} required />
-          <input type="color" value={color} onChange={(e) => setColor(e.target.value)} aria-label="Color" />
-        </div>
+        <select value={actor} onChange={(e) => setActor(e.target.value)} aria-label="Character">
+          <option value="">Plain token (no character)</option>
+          {unplaced.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+        {!actor && (
+          <div className="row">
+            <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Label" maxLength={32} required />
+            <input type="color" value={color} onChange={(e) => setColor(e.target.value)} aria-label="Color" />
+          </div>
+        )}
         <div className="row">
           <select value={size} onChange={(e) => setSize(Number(e.target.value))} aria-label="Size">
             {SIZES.map((s) => (
@@ -114,38 +158,21 @@ function AddToken({ game, command }: { game: GameState; command: Props["command"
               </option>
             ))}
           </select>
-          <select value={controller} onChange={(e) => setController(e.target.value)} aria-label="Controlled by">
-            <option value="">DM only</option>
-            {players.map((m) => (
-              <option key={m.user_id} value={m.user_id}>
-                {m.display_name}
-              </option>
-            ))}
-          </select>
+          {!actor && (
+            <select value={controller} onChange={(e) => setController(e.target.value)} aria-label="Controlled by">
+              <option value="">DM only</option>
+              {players.map((m) => (
+                <option key={m.user_id} value={m.user_id}>
+                  {m.display_name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
         <button>Place</button>
       </form>
     </section>
   );
-}
-
-// freeCell finds the first spot, row by row, where a token of the given
-// size overlaps no other token or wall.
-export function freeCell(game: GameState, size: number): Cell | null {
-  const map = game.map;
-  if (!map) return null;
-  const taken = new Set<string>(Object.keys(map.terrain).filter((k) => map.terrain[k] === "wall"));
-  for (const t of Object.values(game.tokens)) {
-    for (let dx = 0; dx < t.size; dx++) for (let dy = 0; dy < t.size; dy++) taken.add(`${t.pos.x + dx},${t.pos.y + dy}`);
-  }
-  for (let y = 0; y + size <= map.rows; y++) {
-    for (let x = 0; x + size <= map.cols; x++) {
-      let free = true;
-      for (let dx = 0; dx < size && free; dx++) for (let dy = 0; dy < size && free; dy++) free = !taken.has(`${x + dx},${y + dy}`);
-      if (free) return { x, y };
-    }
-  }
-  return { x: 0, y: 0 }; // full map: stack on the corner, the DM can drag it
 }
 
 function MapPanel({ seat, game, command }: { seat: Seat; game: GameState; command: Props["command"] }) {

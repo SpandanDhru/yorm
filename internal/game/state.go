@@ -16,6 +16,7 @@ import (
 type (
 	TokenID string
 	UserID  string
+	ActorID string
 )
 
 // Cell is a grid position; {0, 0} is the top-left cell.
@@ -27,12 +28,13 @@ type Cell struct {
 // State is everything the session actor knows about one session. Only the
 // actor goroutine touches it.
 type State struct {
-	ID       string             `json:"id"`
-	Seq      int64              `json:"seq"` // last applied event
-	Settings Settings           `json:"settings"`
-	Map      *Map               `json:"map"` // nil until the DM sets one
-	Tokens   map[TokenID]*Token `json:"tokens"`
-	Members  map[UserID]*Member `json:"members"`
+	ID       string                 `json:"id"`
+	Seq      int64                  `json:"seq"` // last applied event
+	Settings Settings               `json:"settings"`
+	Map      *Map                   `json:"map"` // nil until the DM sets one
+	Tokens   map[TokenID]*Token     `json:"tokens"`
+	Actors   map[ActorID]*Character `json:"actors"` // PCs, NPCs, and monsters
+	Members  map[UserID]*Member     `json:"members"`
 }
 
 // Settings are the session's house rules.
@@ -109,11 +111,63 @@ func (m *Map) InBounds(c Cell, size int) bool {
 
 type Token struct {
 	ID          TokenID  `json:"id"`
+	Actor       ActorID  `json:"actor,omitempty"` // the character this token stands for, if any
 	Label       string   `json:"label"`
 	Color       string   `json:"color"` // #rrggbb
 	Pos         Cell     `json:"pos"`
 	Size        int      `json:"size"` // cells per side: 1 medium, 2 large
 	Controllers []UserID `json:"controllers"`
+}
+
+type ActorKind string
+
+const (
+	KindPC      ActorKind = "pc"
+	KindNPC     ActorKind = "npc"
+	KindMonster ActorKind = "monster"
+)
+
+// Character is a character card: the stats the table tracks, not a full
+// character sheet.
+type Character struct {
+	ID           ActorID     `json:"id"`
+	Kind         ActorKind   `json:"kind"`
+	Name         string      `json:"name"`
+	Class        string      `json:"class"` // or creature type for monsters
+	Level        int         `json:"level"`
+	AC           int         `json:"ac"`
+	Speed        int         `json:"speed"` // feet per turn
+	InitBonus    int         `json:"init_bonus"`
+	HP           HitPoints   `json:"hp"`
+	Conditions   []Condition `json:"conditions"`
+	Controllers  []UserID    `json:"controllers"`
+	RollsOwnDice bool        `json:"rolls_own_dice"` // enters physical rolls instead of server rolls
+}
+
+type HitPoints struct {
+	Current int `json:"current"`
+	Max     int `json:"max"`
+	Temp    int `json:"temp"`
+}
+
+// Damage applies n points of damage: temporary HP absorbs it first, and
+// HP never drops below 0.
+func (hp HitPoints) Damage(n int) HitPoints {
+	absorbed := min(hp.Temp, n)
+	hp.Temp -= absorbed
+	hp.Current = max(0, hp.Current-(n-absorbed))
+	return hp
+}
+
+// Heal restores n points, up to max.
+func (hp HitPoints) Heal(n int) HitPoints {
+	hp.Current = min(hp.Max, hp.Current+n)
+	return hp
+}
+
+type Condition struct {
+	Name   string `json:"name"`             // "Prone", "Poisoned", homebrew allowed
+	Source string `json:"source,omitempty"` // who or what caused it
 }
 
 type Member struct {
@@ -127,6 +181,7 @@ func NewState(id string) *State {
 		ID:       id,
 		Settings: Settings{Diagonal: DiagonalFive},
 		Tokens:   map[TokenID]*Token{},
+		Actors:   map[ActorID]*Character{},
 		Members:  map[UserID]*Member{},
 	}
 }
@@ -169,12 +224,57 @@ func (s *State) Apply(ev Event) {
 		}
 	case TokenRemoved:
 		delete(s.Tokens, d.Token)
+	case CharacterCreated:
+		s.Actors[d.Character.ID] = cloneCharacter(d.Character)
+	case CharacterUpdated:
+		s.Actors[d.Character.ID] = cloneCharacter(d.Character)
+	case CharacterDeleted:
+		delete(s.Actors, d.Actor)
+	case HPChanged:
+		if a := s.Actors[d.Actor]; a != nil {
+			a.HP = d.HP
+		}
+	case ConditionAdded:
+		if a := s.Actors[d.Actor]; a != nil {
+			a.Conditions = append(slices.Clone(a.Conditions), d.Condition)
+		}
+	case ConditionRemoved:
+		if a := s.Actors[d.Actor]; a != nil {
+			a.Conditions = slices.DeleteFunc(slices.Clone(a.Conditions), func(c Condition) bool { return c.Name == d.Name })
+		}
 	}
 }
 
-// CanControl reports whether user may move token t.
+// cloneCharacter copies c so state never shares slices with an event.
+func cloneCharacter(c Character) *Character {
+	c.Conditions = slices.Clone(c.Conditions)
+	c.Controllers = slices.Clone(c.Controllers)
+	return &c
+}
+
+// CanControl reports whether user may move token t: the DM, the token's
+// own controllers, or its character's.
 func (s *State) CanControl(user UserID, t *Token) bool {
-	return s.IsDM(user) || slices.Contains(t.Controllers, user)
+	if s.IsDM(user) || slices.Contains(t.Controllers, user) {
+		return true
+	}
+	a := s.Actors[t.Actor]
+	return a != nil && slices.Contains(a.Controllers, user)
+}
+
+// CanEdit reports whether user may change character a's card.
+func (s *State) CanEdit(user UserID, a *Character) bool {
+	return s.IsDM(user) || slices.Contains(a.Controllers, user)
+}
+
+// TokenFor returns the token standing for actor, or nil.
+func (s *State) TokenFor(actor ActorID) *Token {
+	for _, t := range s.Tokens {
+		if t.Actor == actor {
+			return t
+		}
+	}
+	return nil
 }
 
 func (s *State) IsDM(user UserID) bool {
