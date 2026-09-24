@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: yorm
+      POSTGRES_PASSWORD: yorm
+      POSTGRES_DB: yorm
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yorm -d yorm"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  yormd:
+    build: .
+    environment:
+      DATABASE_URL: postgres://yorm:yorm@postgres:5432/yorm?sslmode=disable
+      YORM_TOKEN_SECRET: dev-only-secret-do-not-use-in-prod-0123456789
+      YORM_ALLOWED_ORIGINS: localhost:5173
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
