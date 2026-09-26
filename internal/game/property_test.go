@@ -34,6 +34,11 @@ func TestRandomPlay(t *testing.T) {
 			live := NewState("ses")
 			var log []Event
 			snapshots := map[int][]byte{} // index into log -> state after it, as JSON
+			// Each non-DM viewer's copy of the state, built only from what
+			// they are sent.
+			viewers := []Viewer{{User: kai}, {User: ana}, {User: "usr_watch"}}
+			clients := map[UserID]*State{}
+			stats := map[string]int{} // for kai: how each event reached him
 			record := func(by UserID, cause string, p Payload) {
 				// Events go through JSON, as they do in the store.
 				b, err := json.Marshal(p)
@@ -45,11 +50,44 @@ func TestRandomPlay(t *testing.T) {
 					t.Fatal(err)
 				}
 				ev := Event{Seq: live.Seq + 1, Name: p.EventName(), By: by, Cause: cause, At: time.Unix(int64(len(log)), 0).UTC(), Data: data}
+				before := map[UserID]Visible{}
+				for _, v := range viewers {
+					before[v.User] = live.Visible(v)
+				}
 				live.Apply(ev)
 				log = append(log, ev)
 				checkInvariants(t, live, ev)
+				for _, v := range viewers {
+					c := clients[v.User]
+					pev, ok := Deliver(live, v, ev, before[v.User])
+					if c == nil || !ok {
+						clients[v.User] = live.View(v)
+						if v.User == kai {
+							stats["fresh view"]++
+						}
+						continue
+					}
+					if v.User == kai {
+						switch {
+						case pev.Name == "Hidden":
+							stats["hidden"]++
+						case !reflect.DeepEqual(pev.Data, ev.Data):
+							stats["redacted"]++
+						default:
+							stats["as is"]++
+						}
+					}
+					c.Apply(pev)
+					if want := live.View(v); !reflect.DeepEqual(c, want) {
+						t.Fatalf("after %s (seq %d), %s's state built from events differs from their view: %s", ev.Name, ev.Seq, v.User, jsonDiff(c, want))
+					}
+					checkNoLeaks(t, live, v, c, ev)
+				}
 			}
-			for _, m := range []Member{{UserID: dm, Role: auth.RoleDM}, {UserID: kai, Role: auth.RolePlayer}, {UserID: ana, Role: auth.RolePlayer}} {
+			for _, m := range []Member{
+				{UserID: dm, Role: auth.RoleDM}, {UserID: kai, Role: auth.RolePlayer},
+				{UserID: ana, Role: auth.RolePlayer}, {UserID: "usr_watch", Role: auth.RoleSpectator},
+			} {
 				record(m.UserID, "", MemberJoined{Member: m})
 			}
 
@@ -86,7 +124,7 @@ func TestRandomPlay(t *testing.T) {
 				for _, ev := range log {
 					seen[ev.Name]++
 				}
-				t.Logf("accepted %d/%d; events %v", accepted, steps, seen)
+				t.Logf("accepted %d/%d; events %v; kai got %v", accepted, steps, seen, stats)
 			}
 			replayed := NewState("ses")
 			for _, ev := range log {
@@ -108,6 +146,70 @@ func TestRandomPlay(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// jsonDiff shows where two values' JSON first differs.
+func jsonDiff(got, want any) string {
+	a, _ := json.Marshal(got)
+	b, _ := json.Marshal(want)
+	i := 0
+	for i < len(a) && i < len(b) && a[i] == b[i] {
+		i++
+	}
+	from := max(0, i-120)
+	return fmt.Sprintf("\nbuilt ...%s\nview  ...%s", a[from:min(len(a), i+120)], b[from:min(len(b), i+120)])
+}
+
+// checkNoLeaks checks that viewer v's copy c holds nothing v may not see.
+func checkNoLeaks(t *testing.T, live *State, v Viewer, c *State, ev Event) {
+	t.Helper()
+	fail := func(format string, a ...any) {
+		t.Helper()
+		t.Fatalf("after %s (seq %d), %s can see %s", ev.Name, ev.Seq, v.User, fmt.Sprintf(format, a...))
+	}
+	for id, tk := range c.Tokens {
+		if real := live.Tokens[id]; real.Hidden && !live.controlsToken(v.User, real) {
+			fail("hidden token %s", id)
+		}
+		if live.Map != nil && live.Map.Fog.Enabled && !live.controlsToken(v.User, tk) {
+			seen := false
+			for dy := range tk.Size {
+				for dx := range tk.Size {
+					if cell := (Cell{tk.Pos.X + dx, tk.Pos.Y + dy}); live.Map.InBounds(cell, 1) && live.Map.Revealed(v.User, cell) {
+						seen = true
+					}
+				}
+			}
+			if !seen {
+				fail("token %s in fog", id)
+			}
+		}
+	}
+	for id, a := range c.Actors {
+		if a.Kind != KindPC && (!a.Masked || a.HP != (HitPoints{}) || a.AC != 0 || a.Speed != 0) {
+			fail("%s's stats: %+v", id, a)
+		}
+		if a.Kind != KindPC && live.TokenFor(id) == nil && !slices.Contains(live.Actors[id].Controllers, v.User) {
+			fail("off-map monster %s", id)
+		}
+	}
+	if len(c.SecretRolls) > 0 {
+		fail("secret rolls")
+	}
+	if c.Map != nil {
+		for u := range c.Map.Fog.Users {
+			if u != v.User {
+				fail("%s's fog", u)
+			}
+		}
+	}
+	if e := c.Encounter; e != nil {
+		for _, x := range e.Order {
+			if c.Actors[x.Actor] == nil {
+				fail("hidden combatant %s in initiative", x.Actor)
+			}
+		}
 	}
 }
 
@@ -212,7 +314,17 @@ func randomCommand(r *rand.Rand, s *State) Command {
 			return c("end_turn", `{}`)
 		}
 	}
-	switch r.IntN(24) {
+	switch r.IntN(30) {
+	case 24:
+		return c("set_token_hidden", fmt.Sprintf(`{"token":%q,"hidden":%v}`, token(), r.IntN(2) == 0))
+	case 25:
+		return c("set_fog", fmt.Sprintf(`{"enabled":%v}`, r.IntN(3) > 0))
+	case 26, 27:
+		return c(pick("reveal_fog", "reveal_fog", "hide_fog"), fmt.Sprintf(`{"for":%q,"rect":{"from":%s,"to":%s}}`, pick("", "", string(kai), string(ana)), cell(), cell()))
+	case 28:
+		return c("roll_dice", fmt.Sprintf(`{"text":"1d20+2","secret":%v}`, r.IntN(2) == 0))
+	case 29:
+		return c("place_token", fmt.Sprintf(`{"actor":%q,"at":%s,"hidden":true}`, actor(), cell()))
 	case 0:
 		return c("set_map", fmt.Sprintf(`{"cols":%d,"rows":%d,"keep_terrain":%v}`, 6+r.IntN(8), 6+r.IntN(6), r.IntN(3) > 0))
 	case 1:

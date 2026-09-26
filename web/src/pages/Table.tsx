@@ -108,14 +108,27 @@ function TableView({ seat }: { seat: Seat }) {
 
   const paint = useCallback(
     (p: Paint) => {
-      if (p.rect) return command("paint_cells", { terrain: p.terrain, rect: p.rect });
+      // Fog is painted like terrain, with its own commands.
+      const fog = p.terrain === "reveal" || p.terrain === "cover";
+      const name = fog ? (p.terrain === "reveal" ? "reveal_fog" : "hide_fog") : "paint_cells";
+      const base = fog ? { for: p.for } : { terrain: p.terrain };
+      if (p.rect) return command(name, { ...base, rect: p.rect });
       const cells = p.cells ?? [];
       for (let i = 0; i < cells.length; i += PAINT_CHUNK) {
-        command("paint_cells", { terrain: p.terrain, cells: cells.slice(i, i + PAINT_CHUNK) });
+        command(name, { ...base, cells: cells.slice(i, i + PAINT_CHUNK) });
       }
     },
     [command],
   );
+
+  // The DM can look at the table as one of the players sees it.
+  const [viewAs, setViewAs] = useState("");
+  const viewing = (user: string) => {
+    setViewAs(user);
+    conn.current?.viewAs(user);
+  };
+  const isDM = seat.role === "dm";
+  const players = Object.values(table.game?.members ?? {}).filter((m) => m.role === "player");
 
   useEffect(() => {
     if (seat.role !== "dm" || !selectedToken) return;
@@ -141,12 +154,27 @@ function TableView({ seat }: { seat: Seat }) {
           Yorm
         </a>
         <strong>{seat.name}</strong>
+        {isDM && players.length > 0 && (
+          <label className="inline view-as">
+            View as
+            <select value={viewAs} onChange={(e) => viewing(e.target.value)}>
+              <option value="">DM (everything)</option>
+              {players.map((m) => (
+                <option key={m.user_id} value={m.user_id}>
+                  {m.display_name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {viewAs && <span className="viewing">Seeing what {table.game?.members[viewAs]?.display_name} sees</span>}
         <span className={`status status-${status}`}>{STATUS_TEXT[status]}</span>
       </header>
       <MapCanvas
         table={table}
-        me={seat.user}
-        isDM={seat.role === "dm"}
+        me={viewAs || seat.user}
+        isDM={isDM}
+        dmView={isDM && !viewAs}
         selected={selectedToken}
         onSelect={setSelected}
         onMove={move}

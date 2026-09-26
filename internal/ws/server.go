@@ -149,6 +149,8 @@ type clientMsg struct {
 	Args json.RawMessage `json:"args"`
 	// LastSeq, on sync, is the last event the client applied.
 	LastSeq int64 `json:"last_seq"`
+	// User, on view_as, is the player whose view the DM wants.
+	User string `json:"user"`
 }
 
 const maxCommandIDLen = 64
@@ -165,6 +167,8 @@ func (s *Server) handleMessage(c *conn, seat *session.Handle, msg []byte) {
 		c.enqueue(pongMsg)
 	case "sync":
 		err = seat.Sync(c.ctx, m.LastSeq)
+	case "view_as":
+		err = seat.ViewAs(c.ctx, game.UserID(m.User))
 	case "command":
 		if m.ID == "" || len(m.ID) > maxCommandIDLen {
 			c.enqueue(errorMsg("command id must be 1 to 64 characters"))

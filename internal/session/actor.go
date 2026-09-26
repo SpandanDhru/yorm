@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,6 +24,8 @@ type Client struct {
 	Send func(msg []byte) bool
 	// Close disconnects the client, which reconnects and resyncs.
 	Close func(reason string)
+
+	viewAs game.UserID // set when the DM looks at the table as a player
 }
 
 // Result is the outcome of a command submitted with Manager.Do.
@@ -44,8 +48,12 @@ type (
 		member game.Member
 		done   chan<- error // buffered
 	}
-	leaveMsg struct{ client *Client }
-	syncMsg  struct {
+	leaveMsg  struct{ client *Client }
+	viewAsMsg struct {
+		client *Client
+		user   game.UserID // empty to go back to the DM's own view
+	}
+	syncMsg struct {
 		client  *Client
 		lastSeq int64 // the last event the client applied; 0 for none
 	}
@@ -197,26 +205,37 @@ func (a *actor) handle(m any) (stop bool) {
 		delete(a.clients, m.client)
 	case syncMsg:
 		a.sync(m)
+	case viewAsMsg:
+		if a.state.IsDM(m.client.User) && (m.user == "" || (a.state.Members[m.user] != nil && !a.state.IsDM(m.user))) {
+			m.client.viewAs = m.user
+			a.sendView(m.client)
+		}
 	}
 	return false
+}
+
+// viewer is who client c sees the session as.
+func (a *actor) viewer(c *Client) game.Viewer {
+	if c.viewAs != "" {
+		return game.Viewer{User: c.viewAs}
+	}
+	return a.state.ViewerFor(c.User)
+}
+
+func (a *actor) sendView(c *Client) {
+	c.Send(mustMarshal(snapshotMsg{Type: "snapshot", Seq: a.state.Seq, State: a.state.View(a.viewer(c))}))
 }
 
 // sync brings a client up to date: with the events it missed if they are
 // few and still in memory, otherwise with a snapshot.
 func (a *actor) sync(m syncMsg) {
 	if m.lastSeq > 0 && m.lastSeq <= a.state.Seq && a.state.Seq-m.lastSeq < int64(a.opts.CatchupEvents) {
-		if evs, ok := a.recent.after(m.lastSeq, a.state.Seq); ok {
-			out := make([]game.Event, 0, len(evs))
-			for _, ev := range evs {
-				if pev, ok := project(a.state, m.client, ev); ok {
-					out = append(out, pev)
-				}
-			}
-			m.client.Send(mustMarshal(eventsMsg{Type: "events", Seq: a.state.Seq, Events: out}))
+		if evs, ok := a.recent.catchUp(a.viewer(m.client), m.lastSeq, a.state.Seq); ok {
+			m.client.Send(mustMarshal(eventsMsg{Type: "events", Seq: a.state.Seq, Events: evs}))
 			return
 		}
 	}
-	m.client.Send(mustMarshal(snapshotMsg{Type: "snapshot", Seq: a.state.Seq, State: a.state}))
+	a.sendView(m.client)
 }
 
 func (a *actor) handleCommand(m cmdMsg) (stop bool) {
@@ -283,26 +302,59 @@ func (a *actor) commit(by game.UserID, cause string, payloads ...game.Payload) e
 		return err
 	}
 	for _, ev := range evs {
+		// What each player is sent depends on whether ev changes what they
+		// can see, so compare before and after.
+		players := a.players()
+		before := make([]game.Visible, len(players))
+		for i, v := range players {
+			before[i] = a.state.Visible(v)
+		}
 		a.state.Apply(ev)
-		a.broadcast(ev)
+		views := make(map[game.UserID]viewed, len(players))
+		for i, v := range players {
+			pev, ok := game.Deliver(a.state, v, ev, before[i])
+			views[v.User] = viewed{ev: pev, fresh: !ok}
+		}
+		a.broadcast(ev, views)
+		a.recent.add(recentEvent{ev: ev, views: views})
 	}
-	a.recent.add(evs...)
 	if a.state.Seq-a.savedSeq.Load() >= int64(a.opts.SnapshotEvery) {
 		a.snapshot()
 	}
 	return nil
 }
 
-func (a *actor) broadcast(ev game.Event) {
-	for c := range a.clients {
-		if pev, ok := project(a.state, c, ev); ok {
-			c.Send(mustMarshal(eventMsg{Type: "event", Event: pev}))
+// players lists every member who doesn't see everything.
+func (a *actor) players() []game.Viewer {
+	var vs []game.Viewer
+	for _, id := range slices.Sorted(maps.Keys(a.state.Members)) {
+		if v := a.state.ViewerFor(id); !v.DM {
+			vs = append(vs, v)
 		}
 	}
+	return vs
 }
 
-// project returns the version of ev that viewer may see, or ok=false to
-// drop it. Until per-viewer visibility arrives, everyone sees everything.
-func project(_ *game.State, _ *Client, ev game.Event) (game.Event, bool) {
-	return ev, true
+// broadcast sends each client its version of ev: the event, its projection,
+// or a fresh view if what they can see changed.
+func (a *actor) broadcast(ev game.Event, views map[game.UserID]viewed) {
+	raw := mustMarshal(eventMsg{Type: "event", Event: ev})
+	encoded := map[game.UserID][]byte{} // one encoding per player, however many tabs they have open
+	for c := range a.clients {
+		v := a.viewer(c)
+		if v.DM {
+			c.Send(raw)
+			continue
+		}
+		msg, ok := encoded[v.User]
+		if !ok {
+			if vw, known := views[v.User]; known && !vw.fresh {
+				msg = mustMarshal(eventMsg{Type: "event", Event: vw.ev})
+			} else {
+				msg = mustMarshal(snapshotMsg{Type: "snapshot", Seq: a.state.Seq, State: a.state.View(v)})
+			}
+			encoded[v.User] = msg
+		}
+		c.Send(msg)
+	}
 }

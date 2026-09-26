@@ -20,6 +20,7 @@ type DiceRolled struct {
 	Label    string      `json:"label,omitempty"`
 	Result   dice.Result `json:"result"` // no terms when only a physical total was entered
 	Physical bool        `json:"physical"`
+	Secret   bool        `json:"secret,omitempty"` // the DM's; players never see it
 }
 
 func (DiceRolled) EventName() string { return "DiceRolled" }
@@ -35,7 +36,8 @@ type Roll struct {
 const CodeInvalidExpression = "invalid_expression"
 
 type rollDiceArgs struct {
-	Text string `json:"text"` // "1d20+5 longsword", "2d6+3 = 4 5", "1d20+5 = 17"
+	Text   string `json:"text"` // "1d20+5 longsword", "2d6+3 = 4 5", "1d20+5 = 17"
+	Secret bool   `json:"secret"`
 }
 
 func decideRollDice(s *State, cmd Command, env Env) ([]Payload, error) {
@@ -53,7 +55,10 @@ func decideRollDice(s *State, cmd Command, env Env) ([]Payload, error) {
 		}
 		return nil, reject(CodeInvalidExpression, err.Error())
 	}
-	ev := DiceRolled{Expr: l.Expr.String(), Label: l.Label}
+	if a.Secret && !s.IsDM(cmd.By) {
+		return nil, reject(CodeForbidden, "only the DM rolls in secret")
+	}
+	ev := DiceRolled{Expr: l.Expr.String(), Label: l.Label, Secret: a.Secret}
 	switch {
 	case l.Faces != nil:
 		if ev.Result, err = l.Expr.WithFaces(l.Faces); err != nil {

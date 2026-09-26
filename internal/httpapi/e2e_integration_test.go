@@ -319,14 +319,25 @@ func (c *client) do(name string, args any, others ...*client) []msg {
 		}
 		break
 	}
+	// Others get one message per event: the event (perhaps with details
+	// removed), a placeholder, or a fresh view if what they see changed.
 	for _, o := range others {
 		for _, want := range evs {
-			if got := o.read(); got.Type != "event" || got.Seq != want.Seq || got.Name != want.Name {
+			got := o.read()
+			switch {
+			case got.Type == "snapshot" && got.Seq == want.Seq:
+			case got.Type == "event" && got.Seq == want.Seq && (got.Name == want.Name || got.Name == "Hidden"):
+			default:
 				c.t.Fatalf("other client got %+v, want %s at seq %d", got, want.Name, want.Seq)
 			}
 		}
 	}
 	return evs
+}
+
+// viewOf is what user should see of the DM's full state.
+func viewOf(full *game.State, user string) *game.State {
+	return full.View(full.ViewerFor(game.UserID(user)))
 }
 
 func (c *client) refused(name string, args any, code string) {
@@ -476,11 +487,12 @@ func TestCombat(t *testing.T) {
 		t.Fatalf("after the goblin: %+v, want round 2", started)
 	}
 
-	// Everyone agrees, and a restarted server rebuilds the same state.
+	// Everyone agrees on what each may see, and a restarted server
+	// rebuilds the same state.
 	before := dm.snapshot()
-	for _, c := range []*client{kai, ana} {
-		if got := c.snapshot(); !reflect.DeepEqual(got, before) {
-			t.Fatalf("clients diverged:\n%+v\n%+v", before, got)
+	for user, c := range map[string]*client{kaiSeat.User: kai, anaSeat.User: ana} {
+		if got := c.snapshot(); !reflect.DeepEqual(got, viewOf(before, user)) {
+			t.Fatalf("%s's view diverged:\n%+v\n%+v", user, viewOf(before, user), got)
 		}
 	}
 	if len(before.Rolls) != 3 {
@@ -488,9 +500,12 @@ func TestCombat(t *testing.T) {
 	}
 	srv.stop()
 	srv2 := startServer(t, st, signer, uploads)
-	after := connect(t, srv2, sid, anaSeat.Token).snapshot()
+	after := connect(t, srv2, sid, dmSeat.Token).snapshot()
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("state after restart differs:\nbefore %+v\nafter  %+v", before, after)
+	}
+	if got := connect(t, srv2, sid, anaSeat.Token).snapshot(); !reflect.DeepEqual(got, viewOf(before, anaSeat.User)) {
+		t.Fatal("Ana's view after restart differs")
 	}
 }
 
@@ -546,8 +561,8 @@ func TestReconnectMidCombat(t *testing.T) {
 	for _, m := range batch.Events {
 		kaiState.Apply(m.event(t))
 	}
-	if now := dm.snapshot(); !reflect.DeepEqual(&kaiState, now) {
-		t.Fatalf("caught-up state differs:\n%+v\n%+v", &kaiState, now)
+	if want := viewOf(dm.snapshot(), kaiSeat.User); !reflect.DeepEqual(&kaiState, want) {
+		t.Fatalf("caught-up state differs:\n%+v\n%+v", &kaiState, want)
 	}
 
 	// He resends the roll he never saw answered: same answer, no new roll.
@@ -580,4 +595,91 @@ func (c *client) snapshotRaw() []byte {
 	c.t.Helper()
 	c.write(map[string]string{"type": "sync"})
 	return c.expect("snapshot", "").State
+}
+
+// TestVisibility checks, over the wire, that players get only what they
+// may see: nothing of a hidden ambusher or the DM's secret rolls, coarse
+// HP once it's revealed, and fog reveals meant for someone else.
+func TestVisibility(t *testing.T) {
+	st, signer, uploads := newStack(t)
+	srv := startServer(t, st, signer, uploads)
+	base := srv.http.URL + "/api/sessions"
+	dmSeat := postJSON[joinResp](t, base, `{"name":"Ambush"}`)
+	sid := dmSeat.Session
+	join := func(name string) joinResp {
+		return postJSON[joinResp](t, base+"/"+sid+"/join", `{"code":"`+dmSeat.InviteCode+`","display_name":"`+name+`"}`)
+	}
+	kaiSeat, anaSeat := join("Kai"), join("Ana")
+	dm := connect(t, srv, sid, dmSeat.Token)
+	dm.snapshot()
+	kai := connect(t, srv, sid, kaiSeat.Token)
+	dm.expect("event", "MemberJoined")
+	kai.snapshot()
+	ana := connect(t, srv, sid, anaSeat.Token)
+	dm.expect("event", "MemberJoined")
+	kai.expect("event", "MemberJoined")
+	ana.snapshot()
+
+	// raw is what a player's socket carries, so a leak shows up whatever
+	// the message type.
+	expectHidden := func(c *client) {
+		t.Helper()
+		if m := c.read(); m.Type != "event" || m.Name != "Hidden" || len(m.Data) > 2 {
+			t.Fatalf("got %+v, want a bare placeholder", m)
+		}
+	}
+
+	dm.do("set_map", map[string]any{"cols": 10, "rows": 8}, kai, ana)
+	gob := data[game.CharacterCreated](t, dm.do("create_character", map[string]any{"name": "Goblin", "max_hp": 7, "ac": 15})[0]).Character
+	expectHidden(kai)
+	expectHidden(ana)
+	tok := data[game.TokenPlaced](t, dm.do("place_token", map[string]any{"actor": gob.ID, "at": map[string]int{"x": 5, "y": 5}, "hidden": true})[0]).Token
+	expectHidden(kai)
+	expectHidden(ana)
+	dm.do("roll_dice", map[string]any{"text": "1d20+3 stealth", "secret": true})
+	expectHidden(kai)
+	expectHidden(ana)
+	for _, c := range []*client{kai, ana} {
+		if s := c.snapshot(); len(s.Actors) != 0 || len(s.Tokens) != 0 || len(s.SecretRolls) != 0 {
+			t.Fatalf("a player's view shows the ambush: %+v", s)
+		}
+	}
+
+	// Revealed: both get a fresh view with the goblin, masked.
+	dm.do("set_token_hidden", map[string]any{"token": tok.ID, "hidden": false})
+	for _, c := range []*client{kai, ana} {
+		s := c.expect("snapshot", "").State
+		var v game.State
+		if err := json.Unmarshal(s, &v); err != nil {
+			t.Fatal(err)
+		}
+		if g := v.Actors[gob.ID]; g == nil || !g.Masked || g.AC != 0 || g.HP.Max != 0 || g.HPState != game.HPHealthy {
+			t.Fatalf("revealed goblin as a player sees it: %+v", g)
+		}
+	}
+
+	// Fog: on, then the goblin's corner revealed for Kai alone.
+	dm.do("set_fog", map[string]any{"enabled": true})
+	for _, c := range []*client{kai, ana} {
+		c.expect("snapshot", "") // the goblin vanished into the fog
+	}
+	dm.do("reveal_fog", map[string]any{"for": kaiSeat.User, "rect": map[string]any{"from": map[string]int{"x": 4, "y": 4}, "to": map[string]int{"x": 6, "y": 6}}})
+	kai.expect("snapshot", "")
+	expectHidden(ana)
+	if s := kai.snapshot(); s.Tokens[tok.ID] == nil {
+		t.Fatal("Kai can't see the goblin in his revealed area")
+	}
+	if s := ana.snapshot(); s.Tokens[tok.ID] != nil || s.Map.Fog.Users != nil {
+		t.Fatalf("Ana sees the goblin or Kai's fog: %+v", s.Map.Fog)
+	}
+
+	// After a restart, the views are still filtered.
+	srv.stop()
+	srv2 := startServer(t, st, signer, uploads)
+	if s := connect(t, srv2, sid, anaSeat.Token).snapshot(); s.Tokens[tok.ID] != nil || len(s.SecretRolls) != 0 {
+		t.Fatal("after a restart, Ana sees hidden things")
+	}
+	if s := connect(t, srv2, sid, dmSeat.Token).snapshot(); s.Tokens[tok.ID] == nil || len(s.SecretRolls) != 1 {
+		t.Fatal("after a restart, the DM lost hidden things")
+	}
 }

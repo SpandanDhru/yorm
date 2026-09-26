@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { inviteLink, uploadMap, type Seat } from "../api";
 import { freeCell, tokenFor } from "../store";
-import type { GameState, MapInfo, TokenID } from "../types";
+import type { GameState, MapInfo, Token, TokenID } from "../types";
 import { CharactersPanel } from "./Characters";
 import { Initiative } from "./Initiative";
 import { LogPanel } from "./Log";
@@ -36,9 +36,12 @@ export function Sidebar({ seat, game, feed, selected, command }: Props) {
             {token.controllers.map((u) => game.members[u]?.display_name ?? u).join(", ") || "the DM"}
           </p>
           {isDM && (
-            <button className="danger" onClick={() => command("remove_token", { token: token.id })}>
-              Remove token
-            </button>
+            <div className="row">
+              <HideButton token={token} command={command} />
+              <button className="danger" onClick={() => command("remove_token", { token: token.id })}>
+                Remove token
+              </button>
+            </div>
           )}
         </section>
       )}
@@ -57,15 +60,18 @@ export function Sidebar({ seat, game, feed, selected, command }: Props) {
         )}
       </div>
 
-      {tab === "log" && <LogPanel game={game} feed={feed} command={command} />}
+      {tab === "log" && <LogPanel game={game} feed={feed} command={command} isDM={isDM} />}
 
       {tab === "characters" && (
         <>
           <CharactersPanel seat={seat} game={game} command={command} focus={token?.actor ?? null} />
           {token?.actor && isDM && (
-            <button className="secondary" onClick={() => command("remove_token", { token: token.id })}>
-              Remove {token.label}'s token from the map
-            </button>
+            <div className="row">
+              <HideButton token={token} command={command} />
+              <button className="secondary" onClick={() => command("remove_token", { token: token.id })}>
+                Remove from map
+              </button>
+            </div>
           )}
           <section>
             <h3>At the table</h3>
@@ -89,6 +95,18 @@ export function Sidebar({ seat, game, feed, selected, command }: Props) {
         </>
       )}
     </aside>
+  );
+}
+
+function HideButton({ token, command }: { token: Token; command: Props["command"] }) {
+  return (
+    <button
+      className="secondary"
+      title={token.hidden ? "Let the players see it" : "Only you will see it"}
+      onClick={() => command("set_token_hidden", { token: token.id, hidden: !token.hidden })}
+    >
+      {token.hidden ? "Reveal" : "Hide"}
+    </button>
   );
 }
 
@@ -129,6 +147,7 @@ function AddToken({ game, command }: { game: GameState; command: Props["command"
   const [color, setColor] = useState("#c0392b");
   const [size, setSize] = useState(1);
   const [controller, setController] = useState("");
+  const [hidden, setHidden] = useState(false);
   const players = Object.values(game.members).filter((m) => m.role === "player");
   const unplaced = Object.values(game.actors).filter((a) => !tokenFor(game, a.id));
 
@@ -136,8 +155,8 @@ function AddToken({ game, command }: { game: GameState; command: Props["command"
     e.preventDefault();
     const at = freeCell(game, size);
     if (!at) return;
-    if (actor) command("place_token", { actor, size, at });
-    else command("place_token", { label, color, size, at, controllers: controller ? [controller] : [] });
+    if (actor) command("place_token", { actor, size, at, hidden });
+    else command("place_token", { label, color, size, at, hidden, controllers: controller ? [controller] : [] });
     setLabel("");
     setActor("");
   }
@@ -179,6 +198,10 @@ function AddToken({ game, command }: { game: GameState; command: Props["command"
             </select>
           )}
         </div>
+        <label className="inline">
+          <input type="checkbox" checked={hidden} onChange={(e) => setHidden(e.target.checked)} />
+          Hidden from players
+        </label>
         <button>Place</button>
       </form>
     </section>
@@ -194,6 +217,10 @@ function MapPanel({ seat, game, command }: { seat: Seat; game: GameState; comman
       {map && (
         <>
           <GridForm key={map.id} map={map} command={command} />
+          <label className="inline">
+            <input type="checkbox" checked={map.fog.enabled} onChange={(e) => command("set_fog", { enabled: e.target.checked })} />
+            Fog of war (reveal areas with the Reveal brush)
+          </label>
           <label>
             Diagonals
             <select

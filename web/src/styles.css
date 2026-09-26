@@ -596,3 +596,16 @@ button.icon {
 .hint code {
   color: var(--text);
 }
+
+.view-as {
+  font-size: 0.85rem;
+}
+
+.viewing {
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #1b1405;
+  font-size: 0.8rem;
+  font-weight: 600;
+}

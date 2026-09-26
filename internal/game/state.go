@@ -37,6 +37,9 @@ type State struct {
 	Members   map[UserID]*Member     `json:"members"`
 	Encounter *Encounter             `json:"encounter"` // nil outside combat
 	Rolls     []Roll                 `json:"rolls"`     // the most recent MaxRolls, oldest first
+	// SecretRolls are the DM's secret rolls, kept apart so players' views
+	// can drop them without changing which public rolls they keep.
+	SecretRolls []Roll `json:"secret_rolls"`
 }
 
 // Settings are the session's house rules.
@@ -59,6 +62,7 @@ type Map struct {
 	Rows       int     `json:"rows"`
 	CellFeet   int     `json:"cell_feet"`
 	Terrain    Terrain `json:"terrain"`
+	Fog        Fog     `json:"fog"`
 }
 
 // Terrain holds the painted cells; unpainted cells are clear. In JSON it
@@ -119,6 +123,7 @@ type Token struct {
 	Pos         Cell     `json:"pos"`
 	Size        int      `json:"size"` // cells per side: 1 medium, 2 large
 	Controllers []UserID `json:"controllers"`
+	Hidden      bool     `json:"hidden,omitempty"` // only the DM sees it
 }
 
 type ActorKind string
@@ -144,6 +149,30 @@ type Character struct {
 	Conditions   []Condition `json:"conditions"`
 	Controllers  []UserID    `json:"controllers"`
 	RollsOwnDice bool        `json:"rolls_own_dice"` // enters physical rolls instead of server rolls
+
+	// Set only in a player's view of a monster or NPC: its stats are
+	// zeroed, and HPState says roughly how it's doing.
+	Masked  bool    `json:"masked,omitempty"`
+	HPState HPState `json:"hp_state,omitempty"`
+}
+
+// HPState is what players see of a monster's HP.
+type HPState string
+
+const (
+	HPHealthy  HPState = "healthy"
+	HPBloodied HPState = "bloodied" // at or below half
+	HPDown     HPState = "down"
+)
+
+func (hp HitPoints) State() HPState {
+	switch {
+	case hp.Current == 0:
+		return HPDown
+	case hp.Current*2 <= hp.Max:
+		return HPBloodied
+	}
+	return HPHealthy
 }
 
 type HitPoints struct {
@@ -186,6 +215,8 @@ func NewState(id string) *State {
 		Actors:   map[ActorID]*Character{},
 		Members:  map[UserID]*Member{},
 		Rolls:    []Roll{},
+
+		SecretRolls: []Roll{},
 	}
 }
 
@@ -205,6 +236,7 @@ func (s *State) Apply(ev Event) {
 		if m.Terrain == nil {
 			m.Terrain = Terrain{}
 		}
+		m.Fog = m.Fog.clone()
 		s.Map = &m
 	case CellsPainted:
 		if s.Map == nil {
@@ -220,10 +252,30 @@ func (s *State) Apply(ev Event) {
 	case SettingsChanged:
 		s.Settings = d.Settings
 	case DiceRolled:
-		s.Rolls = append(s.Rolls, Roll{Seq: ev.Seq, By: ev.By, At: ev.At, DiceRolled: d})
-		if len(s.Rolls) > MaxRolls {
-			s.Rolls = slices.Clone(s.Rolls[len(s.Rolls)-MaxRolls:])
+		rolls := &s.Rolls
+		if d.Secret {
+			rolls = &s.SecretRolls
 		}
+		*rolls = append(*rolls, Roll{Seq: ev.Seq, By: ev.By, At: ev.At, DiceRolled: d})
+		if len(*rolls) > MaxRolls {
+			*rolls = slices.Clone((*rolls)[len(*rolls)-MaxRolls:])
+		}
+	case TokenHidden:
+		if t := s.Tokens[d.Token]; t != nil {
+			t.Hidden = true
+		}
+	case TokenRevealed:
+		if t := s.Tokens[d.Token]; t != nil {
+			t.Hidden = false
+		}
+	case FogSet:
+		if s.Map != nil {
+			s.Map.Fog.Enabled = d.Enabled
+		}
+	case FogRevealed:
+		s.Map.paintFog(d.For, cellsOf(d.Cells, d.Rect), true)
+	case FogHidden:
+		s.Map.paintFog(d.For, cellsOf(d.Cells, d.Rect), false)
 	case TokenPlaced:
 		t := d.Token
 		s.Tokens[t.ID] = &t
@@ -241,7 +293,7 @@ func (s *State) Apply(ev Event) {
 		delete(s.Actors, d.Actor)
 	case HPChanged:
 		if a := s.Actors[d.Actor]; a != nil {
-			a.HP = d.HP
+			a.HP, a.HPState = d.HP, d.HPState
 		}
 	case ConditionAdded:
 		if a := s.Actors[d.Actor]; a != nil {

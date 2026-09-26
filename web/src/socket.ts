@@ -28,6 +28,7 @@ export class Connection {
   // Commands sent but not yet answered. They are resent, with the same IDs,
   // after a reconnect; the server answers a repeat without applying it twice.
   private outbox = new Map<string, { name: string; args: unknown }>();
+  private viewingAs = ""; // the DM's "view as" player, restored after a reconnect
 
   constructor(
     private readonly sessionId: string,
@@ -45,6 +46,12 @@ export class Connection {
     clearTimeout(this.timer);
     this.ws?.close(1000);
     this.ws = null;
+  }
+
+  // viewAs shows the DM the table as a player sees it ("" for their own view).
+  viewAs(user: string): void {
+    this.viewingAs = user;
+    this.send({ type: "view_as", user });
   }
 
   sync(): void {
@@ -78,6 +85,7 @@ export class Connection {
       if (msg.type === "welcome") {
         this.attempt = 0;
         this.handlers.onStatus("open");
+        if (this.viewingAs) this.send({ type: "view_as", user: this.viewingAs });
         this.sync();
         for (const [id, c] of this.outbox) this.send({ type: "command", id, name: c.name, args: c.args });
       }

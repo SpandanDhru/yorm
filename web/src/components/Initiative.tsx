@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Seat } from "../api";
 import { canEdit } from "../store";
-import type { ActionKind, Encounter, GameState, InitEntry } from "../types";
+import { HIDDEN_ACTOR, type ActionKind, type Encounter, type GameState, type InitEntry } from "../types";
 import { HPBar } from "./Characters";
 
 type Command = (name: string, args: unknown) => void;
@@ -46,11 +46,17 @@ export function Initiative({ seat, game, command }: { seat: Seat; game: GameStat
         </p>
       )}
 
+      {e.active === HIDDEN_ACTOR && (
+        <div className="turn">
+          <strong>A hidden combatant's turn</strong>
+        </div>
+      )}
+
       {active && (
         <div className="turn stack">
           <div className="row">
             <strong>{active.name}'s turn</strong>
-            <span className="muted">{e.economy.movement_left} ft left</span>
+            {!active.masked && <span className="muted">{e.economy.movement_left} ft left</span>}
           </div>
           <Resource label="Action" kind="action" available={e.economy.action} dashed={e.economy.action_dash} mayAct={mayAct} command={command} />
           <Resource label="Bonus action" kind="bonus" available={e.economy.bonus} dashed={e.economy.bonus_dash} mayAct={mayAct} command={command} />

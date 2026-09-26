@@ -1,11 +1,12 @@
 import { useState, type FormEvent } from "react";
 import type { Seat } from "../api";
-import { canEdit, freeCell, tokenFor } from "../store";
+import { canEdit, freeCell, hpFraction, hpLevel, tokenFor } from "../store";
 import type { ActorID, ActorKind, Character, GameState } from "../types";
 
 type Command = (name: string, args: unknown) => void;
 
 const KIND_LABEL: Record<ActorKind, string> = { pc: "PC", npc: "NPC", monster: "Monster" };
+const HP_LABEL = { healthy: "Healthy", bloodied: "Bloodied", down: "Down" };
 
 // The 5e conditions, offered as suggestions; anything else is allowed too.
 const CONDITIONS = [
@@ -105,19 +106,29 @@ function CharacterCard(p: {
           <span className={`tag tag-${a.kind}`}>{KIND_LABEL[a.kind]}</span>
         </span>
         <span className="card-stats">
-          AC {a.ac} · {a.hp.current}/{a.hp.max}
-          {a.hp.temp > 0 && ` +${a.hp.temp}`}
+          {a.masked ? (
+            HP_LABEL[hpLevel(a)]
+          ) : (
+            <>
+              AC {a.ac} · {a.hp.current}/{a.hp.max}
+              {a.hp.temp > 0 && ` +${a.hp.temp}`}
+            </>
+          )}
         </span>
         <HPBar character={a} />
       </button>
 
       {p.expanded && (
         <div className="card-body stack">
-          <p className="muted">
-            {[a.class, a.level > 0 && `level ${a.level}`].filter(Boolean).join(", ") || KIND_LABEL[a.kind]} · speed {a.speed} ft ·
-            init {a.init_bonus >= 0 ? `+${a.init_bonus}` : a.init_bonus}
-            {a.rolls_own_dice && " · rolls own dice"}
-          </p>
+          {a.masked ? (
+            <p className="muted">The DM keeps this one's stats to themselves.</p>
+          ) : (
+            <p className="muted">
+              {[a.class, a.level > 0 && `level ${a.level}`].filter(Boolean).join(", ") || KIND_LABEL[a.kind]} · speed {a.speed} ft ·
+              init {a.init_bonus >= 0 ? `+${a.init_bonus}` : a.init_bonus}
+              {a.rolls_own_dice && " · rolls own dice"}
+            </p>
+          )}
 
           {editable && (
             <div className="row hp-row">
@@ -181,9 +192,18 @@ function CharacterCard(p: {
                 Edit
               </button>
               {isDM && game.map && !tokenFor(game, a.id) && (
-                <button className="secondary" onClick={() => command("place_token", { actor: a.id, at: freeCell(game, 1) })}>
-                  Put on map
-                </button>
+                <>
+                  <button className="secondary" onClick={() => command("place_token", { actor: a.id, at: freeCell(game, 1) })}>
+                    Put on map
+                  </button>
+                  <button
+                    className="secondary"
+                    title="Only you see it until you reveal it"
+                    onClick={() => command("place_token", { actor: a.id, at: freeCell(game, 1), hidden: true })}
+                  >
+                    Put on map hidden
+                  </button>
+                </>
               )}
               {isDM && (
                 <button
@@ -204,8 +224,8 @@ function CharacterCard(p: {
 }
 
 export function HPBar({ character: a }: { character: Character }) {
-  const pct = a.hp.max > 0 ? (a.hp.current / a.hp.max) * 100 : 0;
-  const level = a.hp.current === 0 ? "down" : pct <= 50 ? "bloodied" : "healthy";
+  const pct = hpFraction(a) * 100;
+  const level = hpLevel(a);
   return (
     <span className="hpbar" role="meter" aria-valuemin={0} aria-valuemax={a.hp.max} aria-valuenow={a.hp.current} aria-label="Hit points">
       <span className={`hpbar-fill hp-${level}`} style={{ width: `${pct}%` }} />

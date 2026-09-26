@@ -260,6 +260,12 @@ func TestPayloadRoundTrip(t *testing.T) {
 			{Term: dice.Term{Count: 2, Sides: 20, Keep: 1}, Faces: []int{7, 16}, Dropped: []bool{true, false}, Value: 16},
 			{Term: dice.Term{Const: 5}, Value: 5},
 		}}},
+		TokenHidden{Token: "t"},
+		TokenRevealed{Token: "t"},
+		FogSet{Enabled: true},
+		FogRevealed{For: kai, Cells: []Cell{{1, 1}}, Rect: &Rect{From: Cell{0, 0}, To: Cell{2, 2}}},
+		FogHidden{Cells: []Cell{{1, 1}}},
+		Hidden{},
 	}
 	if len(all) != len(payloads) {
 		t.Fatalf("test covers %d payloads, registry has %d", len(all), len(payloads))

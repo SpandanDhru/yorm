@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyEvent, initialTable, reducer, sortOrder, tokenPos, type TableState } from "./store";
+import { applyEvent, describe as describeEvent, fogView, initialTable, reducer, sortOrder, tokenPos, type TableState } from "./store";
 import type { Character, GameEvent, GameState, Token } from "./types";
 
 const rogue: Token = { id: "tok_1", label: "Rogue", color: "#aa0000", pos: { x: 1, y: 1 }, size: 1, controllers: ["usr_kai"] };
@@ -8,12 +8,13 @@ const base: GameState = {
   id: "ses_1",
   seq: 3,
   settings: { diagonal: "5" },
-  map: { id: "map_1", image_url: "/uploads/m.png", background: "#e8e0cc", cols: 10, rows: 10, cell_feet: 5, terrain: { "0,0": "wall" } },
+  map: { id: "map_1", image_url: "/uploads/m.png", background: "#e8e0cc", cols: 10, rows: 10, cell_feet: 5, terrain: { "0,0": "wall" }, fog: { enabled: false, party: null, users: null } },
   tokens: { tok_1: rogue },
   actors: {},
   members: {},
   encounter: null,
   rolls: [],
+  secret_rolls: [],
 };
 
 function ev(seq: number, e: Omit<GameEvent, "seq" | "by" | "at">): GameEvent {
@@ -199,5 +200,39 @@ describe("log", () => {
     s = reducer(s, { type: "event", event: moved(4) });
     s = reducer(s, { type: "event", event: ev(5, { name: "CombatStarted", data: { order: [] } }) });
     expect(s.feed).toEqual([{ seq: 5, text: "Combat started: roll initiative" }]);
+  });
+});
+
+describe("visibility", () => {
+  it("reveals and covers fog for the party and one player", () => {
+    let s = applyEvent(base, ev(4, { name: "FogSet", data: { enabled: true } }));
+    s = applyEvent(s, ev(5, { name: "FogRevealed", data: { rect: { from: { x: 0, y: 0 }, to: { x: 2, y: 1 } } } }));
+    s = applyEvent(s, ev(6, { name: "FogHidden", data: { cells: [{ x: 1, y: 1 }] } }));
+    s = applyEvent(s, ev(7, { name: "FogRevealed", data: { for: "usr_kai", cells: [{ x: 9, y: 9 }] } }));
+    const party = fogView(s.map!);
+    const kai = fogView(s.map!, "usr_kai");
+    expect([party({ x: 0, y: 0 }), party({ x: 2, y: 1 }), party({ x: 1, y: 1 }), party({ x: 9, y: 9 })]).toEqual([true, true, false, false]);
+    expect(kai({ x: 9, y: 9 })).toBe(true);
+    // Same bytes as Go's []byte JSON, on a 10-column map: row 0 is bits
+    // 0-2, row 1 is bits 10 and 12 (11 was covered again).
+    expect(s.map!.fog.party).toBe(btoa(String.fromCharCode(0b0000_0111, 0b0001_0100, ...new Array(11).fill(0))));
+    expect(fogView({ ...s.map!, fog: { ...s.map!.fog, enabled: false } })({ x: 5, y: 5 })).toBe(true);
+  });
+
+  it("tracks hidden tokens, secret rolls, and masked HP", () => {
+    let s = applyEvent(base, ev(4, { name: "TokenHidden", data: { token: "tok_1" } }));
+    expect(s.tokens.tok_1?.hidden).toBe(true);
+    s = applyEvent(s, ev(5, { name: "TokenRevealed", data: { token: "tok_1" } }));
+    expect(s.tokens.tok_1?.hidden).toBe(false);
+    s = applyEvent(s, ev(6, { name: "DiceRolled", data: { expr: "1d20", result: { terms: null, total: 3 }, physical: false, secret: true } }));
+    expect([s.rolls.length, s.secret_rolls.length]).toEqual([0, 1]);
+    s = applyEvent(s, ev(7, { name: "Hidden", data: {} }));
+    expect(s.seq).toBe(7);
+  });
+
+  it("describes masked damage without numbers", () => {
+    const g = { ...base, actors: { a: { id: "a", name: "Goblin", masked: true } as Character } };
+    const hit = ev(4, { name: "HPChanged", data: { actor: "a", hp: { current: 0, max: 0, temp: 0 }, delta: -1, hp_state: "bloodied" } });
+    expect(describeEvent(g, hit)).toBe("Goblin was hurt (bloodied)");
   });
 });

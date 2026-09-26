@@ -80,35 +80,70 @@ func (a *answers) learn(evs []game.Event) {
 	}
 }
 
+// recentEvent is an event and what each player was sent for it.
+type recentEvent struct {
+	ev    game.Event
+	views map[game.UserID]viewed // nil for events loaded at start-up
+}
+
+// viewed is what one player was sent for an event: its projection, or (if
+// fresh) a new view of the whole state, because what they can see changed.
+type viewed struct {
+	ev    game.Event
+	fresh bool
+}
+
 // recent keeps the last events in memory, so a client that missed a few
 // catches up without a full snapshot.
 type recent struct {
 	max int
-	evs []game.Event
+	evs []recentEvent
 }
 
-func (r *recent) add(evs ...game.Event) {
+func (r *recent) add(evs ...recentEvent) {
 	r.evs = append(r.evs, evs...)
 	if over := len(r.evs) - r.max; over > 0 {
-		r.evs = append([]game.Event(nil), r.evs[over:]...)
+		r.evs = append([]recentEvent(nil), r.evs[over:]...)
 	}
 }
 
 // after returns the events with seq greater than seq, if it still has all
 // of them; ok is false if some have been forgotten.
-func (r *recent) after(seq, current int64) (evs []game.Event, ok bool) {
+func (r *recent) after(seq, current int64) (evs []recentEvent, ok bool) {
 	if seq == current {
 		return nil, true
 	}
-	if len(r.evs) == 0 || r.evs[0].Seq > seq+1 {
+	if len(r.evs) == 0 || r.evs[0].ev.Seq > seq+1 {
 		return nil, false
 	}
-	for i, ev := range r.evs {
-		if ev.Seq > seq {
+	for i, re := range r.evs {
+		if re.ev.Seq > seq {
 			return r.evs[i:], true
 		}
 	}
 	return nil, false
+}
+
+// catchUp returns what viewer v missed after seq, or ok=false if that
+// takes a snapshot: too far back, or v's view changed along the way.
+func (r *recent) catchUp(v game.Viewer, seq, current int64) (evs []game.Event, ok bool) {
+	missed, ok := r.after(seq, current)
+	if !ok {
+		return nil, false
+	}
+	evs = make([]game.Event, 0, len(missed))
+	for _, re := range missed {
+		if v.DM {
+			evs = append(evs, re.ev)
+			continue
+		}
+		vw, known := re.views[v.User]
+		if !known || vw.fresh {
+			return nil, false
+		}
+		evs = append(evs, vw.ev)
+	}
+	return evs, true
 }
 
 func encodeSnapshot(s *game.State, a *answers) []byte {

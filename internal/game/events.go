@@ -48,9 +48,12 @@ type Rect struct {
 	To   Cell `json:"to"`
 }
 
-func (e CellsPainted) cells() []Cell {
-	cells := slices.Clone(e.Cells)
-	if r := e.Rect; r != nil {
+func (e CellsPainted) cells() []Cell { return cellsOf(e.Cells, e.Rect) }
+
+// cellsOf lists cells plus every cell of rect, if set.
+func cellsOf(cells []Cell, r *Rect) []Cell {
+	cells = slices.Clone(cells)
+	if r != nil {
 		for y := min(r.From.Y, r.To.Y); y <= max(r.From.Y, r.To.Y); y++ {
 			for x := min(r.From.X, r.To.X); x <= max(r.From.X, r.To.X); x++ {
 				cells = append(cells, Cell{x, y})
@@ -59,6 +62,37 @@ func (e CellsPainted) cells() []Cell {
 	}
 	return cells
 }
+
+type TokenHidden struct {
+	Token TokenID `json:"token"`
+}
+
+type TokenRevealed struct {
+	Token TokenID `json:"token"`
+}
+
+// FogSet turns fog of war on or off for the map.
+type FogSet struct {
+	Enabled bool `json:"enabled"`
+}
+
+// FogRevealed uncovers cells for the party, or for one player if For is set.
+type FogRevealed struct {
+	For   UserID `json:"for,omitempty"`
+	Cells []Cell `json:"cells,omitempty"`
+	Rect  *Rect  `json:"rect,omitempty"`
+}
+
+// FogHidden covers cells again.
+type FogHidden struct {
+	For   UserID `json:"for,omitempty"`
+	Cells []Cell `json:"cells,omitempty"`
+	Rect  *Rect  `json:"rect,omitempty"`
+}
+
+// Hidden stands in, in a player's stream, for an event they may not see,
+// so their seqs stay continuous. It carries nothing.
+type Hidden struct{}
 
 type SettingsChanged struct {
 	Settings Settings `json:"settings"`
@@ -82,6 +116,9 @@ type HPChanged struct {
 	Actor ActorID   `json:"actor"`
 	HP    HitPoints `json:"hp"`    // after the change
 	Delta int       `json:"delta"` // what was asked: negative for damage; 0 for a temp HP change
+	// HPState is set only in a player's view of a masked character, whose
+	// HP is zeroed and Delta reduced to its sign.
+	HPState HPState `json:"hp_state,omitempty"`
 }
 
 type ConditionAdded struct {
@@ -121,6 +158,12 @@ func (CharacterDeleted) EventName() string { return "CharacterDeleted" }
 func (HPChanged) EventName() string        { return "HPChanged" }
 func (ConditionAdded) EventName() string   { return "ConditionAdded" }
 func (ConditionRemoved) EventName() string { return "ConditionRemoved" }
+func (TokenHidden) EventName() string      { return "TokenHidden" }
+func (TokenRevealed) EventName() string    { return "TokenRevealed" }
+func (FogSet) EventName() string           { return "FogSet" }
+func (FogRevealed) EventName() string      { return "FogRevealed" }
+func (FogHidden) EventName() string        { return "FogHidden" }
+func (Hidden) EventName() string           { return "Hidden" }
 
 var payloads = map[string]func([]byte) (Payload, error){
 	"MemberJoined":     decode[MemberJoined],
@@ -145,6 +188,12 @@ var payloads = map[string]func([]byte) (Payload, error){
 	"ActionUsed":       decode[ActionUsed],
 	"CombatEnded":      decode[CombatEnded],
 	"DiceRolled":       decode[DiceRolled],
+	"TokenHidden":      decode[TokenHidden],
+	"TokenRevealed":    decode[TokenRevealed],
+	"FogSet":           decode[FogSet],
+	"FogRevealed":      decode[FogRevealed],
+	"FogHidden":        decode[FogHidden],
+	"Hidden":           decode[Hidden],
 }
 
 func decode[T Payload](data []byte) (Payload, error) {

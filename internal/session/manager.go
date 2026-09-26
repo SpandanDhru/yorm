@@ -167,7 +167,9 @@ func (m *Manager) load(id string) (*actor, error) {
 			return nil, err
 		}
 	}
-	r.add(tail...)
+	for _, ev := range tail {
+		r.add(recentEvent{ev: ev})
+	}
 
 	log.Info("session started", "snapshot", snapSeq, "replayed", len(evs), "seq", state.Seq, "took", time.Since(start))
 	a := &actor{
@@ -277,6 +279,12 @@ func (h *Handle) Submit(ctx context.Context, cmd game.Command) error {
 // missed, or a snapshot if that's too many or lastSeq is 0.
 func (h *Handle) Sync(ctx context.Context, lastSeq int64) error {
 	return h.a.send(ctx, syncMsg{client: h.c, lastSeq: lastSeq})
+}
+
+// ViewAs shows the DM the table as the given player sees it, or as
+// themselves again if user is empty. Ignored for anyone but the DM.
+func (h *Handle) ViewAs(ctx context.Context, user game.UserID) error {
+	return h.a.send(ctx, viewAsMsg{client: h.c, user: user})
 }
 
 // Leave disconnects the client from the session.

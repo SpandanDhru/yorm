@@ -75,6 +75,11 @@ var deciders = map[string]decider{
 	"end_combat":         decideEndCombat,
 
 	"roll_dice": decideRollDice,
+
+	"set_token_hidden": decideSetTokenHidden,
+	"set_fog":          decideSetFog,
+	"reveal_fog":       decidePaintFog(true),
+	"hide_fog":         decidePaintFog(false),
 }
 
 // Decide validates cmd against s and returns the events it produces. The
@@ -166,6 +171,7 @@ func decideSetMap(s *State, cmd Command, env Env) ([]Payload, error) {
 				m.Terrain[c] = k
 			}
 		}
+		m.regridFog(s.Map)
 	}
 	return []Payload{MapSet{Map: m}}, nil
 }
@@ -232,6 +238,7 @@ type placeTokenArgs struct {
 	At          Cell     `json:"at"`
 	Size        int      `json:"size"`
 	Controllers []UserID `json:"controllers"`
+	Hidden      bool     `json:"hidden"`
 }
 
 var colorRE = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
@@ -300,7 +307,7 @@ func decidePlaceToken(s *State, cmd Command, env Env) ([]Payload, error) {
 	}
 	t := Token{
 		ID: TokenID(env.NewID("tok")), Actor: a.Actor, Label: a.Label, Color: a.Color,
-		Pos: a.At, Size: a.Size, Controllers: controllers,
+		Pos: a.At, Size: a.Size, Controllers: controllers, Hidden: a.Hidden,
 	}
 	return []Payload{TokenPlaced{Token: t}}, nil
 }

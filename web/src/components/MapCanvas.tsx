@@ -2,26 +2,28 @@ import type Konva from "konva";
 import { useEffect, useRef, useState } from "react";
 import { Circle, Group, Image as KImage, Layer, Line, Rect, Shape, Stage, Text } from "react-konva";
 import { pathCost } from "../move";
-import { canControl, cellKey, rectCells, tokenPos, type TableState } from "../store";
-import type { Cell, Rect as CellRect, TerrainKind, Token, TokenID, UserID } from "../types";
+import { canControl, cellKey, fogView, hpFraction, hpLevel, rectCells, tokenPos, type TableState } from "../store";
+import type { Cell, Rect as CellRect, MapInfo, Member, TerrainKind, Token, TokenID, UserID } from "../types";
 
 const CELL = 64; // px per grid cell at zoom 1
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 5;
 
-export type PaintKind = TerrainKind | "clear";
+export type PaintKind = TerrainKind | "clear" | "reveal" | "cover";
 type Mode = "select" | "brush" | "rect";
 
 export interface Paint {
   terrain: PaintKind;
+  for?: UserID; // reveal and cover: a player, or undefined for the party
   cells?: Cell[];
   rect?: CellRect;
 }
 
 interface Props {
   table: TableState;
-  me: UserID;
-  isDM: boolean;
+  me: UserID; // whose view this is: the user, or the player the DM is viewing as
+  isDM: boolean; // may use the DM's tools
+  dmView: boolean; // sees the DM's view (false while the DM views as a player)
   selected: TokenID | null;
   onSelect(id: TokenID | null): void;
   // onMove returns false if the move could not be sent.
@@ -35,9 +37,16 @@ export const TERRAIN: Record<PaintKind, { label: string; fill: string; hatch?: b
   water: { label: "Water", fill: "rgba(47,127,209,0.5)" },
   hazard: { label: "Hazard", fill: "rgba(208,69,58,0.45)" },
   clear: { label: "Erase", fill: "rgba(255,255,255,0.35)" },
+  reveal: { label: "Reveal", fill: "rgba(255,236,160,0.45)" },
+  cover: { label: "Cover", fill: "rgba(12,13,17,0.75)" },
 };
 
-export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint }: Props) {
+const HP_COLORS = { healthy: "#4caf7a", bloodied: "#e0a030", down: "#555555" };
+
+const TERRAIN_KINDS: PaintKind[] = ["wall", "difficult", "water", "hazard", "clear"];
+const FOG_KINDS: PaintKind[] = ["reveal", "cover"];
+
+export function MapCanvas({ table, me, isDM, dmView, selected, onSelect, onMove, onPaint }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const size = useSize(wrap);
   const map = table.game?.map ?? null;
@@ -45,6 +54,7 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
   const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
   const [mode, setMode] = useState<Mode>("select");
   const [brush, setBrush] = useState<PaintKind>("wall");
+  const [fogFor, setFogFor] = useState<UserID | undefined>(undefined); // fog tools: the party, or one player
   const painting = isDM && mode !== "select";
 
   // Fit the whole map in view when it first appears or its grid changes.
@@ -132,8 +142,9 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
     if (!s) return;
     stroke.current = null;
     setPreview([]);
-    if (mode === "brush") onPaint({ terrain: brush, cells: [...s.cells.values()] });
-    else onPaint({ terrain: brush, rect: { from: s.start, to: s.last } });
+    const target = FOG_KINDS.includes(brush) ? fogFor : undefined;
+    if (mode === "brush") onPaint({ terrain: brush, for: target, cells: [...s.cells.values()] });
+    else onPaint({ terrain: brush, for: target, rect: { from: s.start, to: s.last } });
   }
 
   return (
@@ -141,7 +152,18 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
       {!map && (
         <div className="canvas-empty">{isDM ? "Upload a map or create a blank one to start." : "Waiting for the DM to set up a map…"}</div>
       )}
-      {map && isDM && <Toolbar mode={mode} setMode={setMode} brush={brush} setBrush={setBrush} />}
+      {map && isDM && (
+        <Toolbar
+          mode={mode}
+          setMode={setMode}
+          brush={brush}
+          setBrush={setBrush}
+          fog={map.fog.enabled}
+          fogFor={fogFor}
+          setFogFor={setFogFor}
+          players={Object.values(table.game!.members).filter((m) => m.role === "player")}
+        />
+      )}
       {map && hasSize && (
         <Stage
           width={size.w}
@@ -171,6 +193,13 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
           <Layer listening={false}>
             <Shape sceneFunc={(ctx) => drawCells(ctx, Object.entries(map.terrain).map(([k, kind]) => [parseKey(k), kind]))} />
             <Grid cols={map.cols} rows={map.rows} />
+          </Layer>
+          {map.fog.enabled && (
+            <Layer listening={false}>
+              <Shape sceneFunc={(ctx) => drawFog(ctx, map, fogView(map, dmView ? fogFor : me), dmView)} />
+            </Layer>
+          )}
+          <Layer listening={false}>
             {preview.length > 0 && <Shape sceneFunc={(ctx) => drawCells(ctx, preview.map((c) => [c, brush]))} />}
           </Layer>
           <Layer listening={!painting}>
@@ -187,6 +216,7 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
                   key={t.id}
                   x={pos.x * CELL}
                   y={pos.y * CELL}
+                  opacity={t.hidden ? 0.45 : 1}
                   draggable={movable}
                   onPointerDown={() => onSelect(t.id)}
                   onDragMove={(e) => {
@@ -209,6 +239,7 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
                     fill={t.color}
                     stroke={selected === t.id ? "#ffffff" : mine ? "#ffd166" : "#111111"}
                     strokeWidth={selected === t.id ? 4 : 2}
+                    dash={t.hidden ? [6, 4] : undefined}
                     shadowColor="black"
                     shadowBlur={6}
                     shadowOpacity={0.5}
@@ -228,10 +259,10 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
                     <Rect
                       x={6}
                       y={-2}
-                      width={(px - 12) * Math.max(0, Math.min(1, actor.hp.current / actor.hp.max))}
+                      width={(px - 12) * hpFraction(actor)}
                       height={6}
                       cornerRadius={3}
-                      fill={actor.hp.current === 0 ? "#555" : actor.hp.current * 2 <= actor.hp.max ? "#e0a030" : "#4caf7a"}
+                      fill={HP_COLORS[hpLevel(actor)]}
                       listening={false}
                     />
                   )}
@@ -274,7 +305,17 @@ export function MapCanvas({ table, me, isDM, selected, onSelect, onMove, onPaint
   );
 }
 
-function Toolbar(props: { mode: Mode; setMode(m: Mode): void; brush: PaintKind; setBrush(k: PaintKind): void }) {
+function Toolbar(props: {
+  mode: Mode;
+  setMode(m: Mode): void;
+  brush: PaintKind;
+  setBrush(k: PaintKind): void;
+  fog: boolean;
+  fogFor: UserID | undefined;
+  setFogFor(u: UserID | undefined): void;
+  players: Member[];
+}) {
+  const kinds = props.fog ? [...TERRAIN_KINDS, ...FOG_KINDS] : TERRAIN_KINDS;
   const modes: { mode: Mode; label: string; title: string }[] = [
     { mode: "select", label: "Move", title: "Move tokens and pan the map" },
     { mode: "brush", label: "Brush", title: "Paint cells one by one" },
@@ -290,16 +331,41 @@ function Toolbar(props: { mode: Mode; setMode(m: Mode): void; brush: PaintKind; 
       {props.mode !== "select" && (
         <>
           <span className="toolbar-sep" />
-          {(Object.keys(TERRAIN) as PaintKind[]).map((k) => (
+          {kinds.map((k) => (
             <button key={k} aria-pressed={props.brush === k} onClick={() => props.setBrush(k)}>
               <span className="swatch" style={{ background: TERRAIN[k].fill }} />
               {TERRAIN[k].label}
             </button>
           ))}
+          {props.fog && FOG_KINDS.includes(props.brush) && (
+            <select
+              value={props.fogFor ?? ""}
+              onChange={(e) => props.setFogFor(e.target.value || undefined)}
+              aria-label="Reveal for"
+            >
+              <option value="">for the party</option>
+              {props.players.map((m) => (
+                <option key={m.user_id} value={m.user_id}>
+                  for {m.display_name} only
+                </option>
+              ))}
+            </select>
+          )}
         </>
       )}
     </div>
   );
+}
+
+// drawFog darkens cells the viewer can't see: solid for players, see-through
+// for the DM, who needs to see what's underneath.
+function drawFog(ctx: Konva.Context, map: MapInfo, revealed: (c: Cell) => boolean, dmView: boolean) {
+  ctx.fillStyle = dmView ? "rgba(12,13,17,0.55)" : "rgb(12,13,17)";
+  for (let y = 0; y < map.rows; y++) {
+    for (let x = 0; x < map.cols; x++) {
+      if (!revealed({ x, y })) ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+    }
+  }
 }
 
 function drawCells(ctx: Konva.Context, cells: [Cell, PaintKind][]) {

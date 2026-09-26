@@ -20,6 +20,14 @@ export interface MapInfo {
   rows: number;
   cell_feet: number;
   terrain: Record<string, TerrainKind>; // keyed by "x,y"
+  fog: Fog;
+}
+
+// Fog of war. Bitsets are base64, bit y*cols+x per cell; see game.Bits.
+export interface Fog {
+  enabled: boolean;
+  party: string | null;
+  users: Record<UserID, string | null> | null; // a player's own reveals
 }
 
 export type DiagonalRule = "5" | "5-10-5";
@@ -41,6 +49,7 @@ export interface Token {
   pos: Cell;
   size: number;
   controllers: UserID[];
+  hidden?: boolean; // only the DM (and its controllers) see it
 }
 
 export type ActorKind = "pc" | "npc" | "monster";
@@ -69,7 +78,13 @@ export interface Character {
   conditions: Condition[];
   controllers: UserID[];
   rolls_own_dice: boolean;
+  // Set in a player's view of a monster or NPC: stats are zeroed and
+  // hp_state says roughly how it's doing.
+  masked?: boolean;
+  hp_state?: HPState;
 }
+
+export type HPState = "healthy" | "bloodied" | "down";
 
 export interface Member {
   user_id: UserID;
@@ -97,7 +112,7 @@ export interface TurnEconomy {
 export interface Encounter {
   round: number;
   order: InitEntry[];
-  active: ActorID; // "" while waiting for initiative
+  active: ActorID; // "" while waiting for initiative; HIDDEN_ACTOR for a combatant this viewer can't see
   economy: TurnEconomy;
   reaction_used: Record<ActorID, boolean>;
 }
@@ -121,6 +136,7 @@ export interface DiceRolled {
   label?: string;
   result: { terms: TermResult[] | null; total: number };
   physical: boolean;
+  secret?: boolean;
 }
 
 export interface Roll extends DiceRolled {
@@ -139,6 +155,7 @@ export interface GameState {
   members: Record<UserID, Member>;
   encounter: Encounter | null;
   rolls: Roll[];
+  secret_rolls: Roll[];
 }
 
 interface EventBase {
@@ -160,7 +177,13 @@ export type GameEvent = EventBase &
     | { name: "CharacterCreated"; data: { character: Character } }
     | { name: "CharacterUpdated"; data: { character: Character } }
     | { name: "CharacterDeleted"; data: { actor: ActorID } }
-    | { name: "HPChanged"; data: { actor: ActorID; hp: HitPoints; delta: number } }
+    | { name: "HPChanged"; data: { actor: ActorID; hp: HitPoints; delta: number; hp_state?: HPState } }
+    | { name: "TokenHidden"; data: { token: TokenID } }
+    | { name: "TokenRevealed"; data: { token: TokenID } }
+    | { name: "FogSet"; data: { enabled: boolean } }
+    | { name: "FogRevealed"; data: { for?: UserID; cells?: Cell[]; rect?: Rect } }
+    | { name: "FogHidden"; data: { for?: UserID; cells?: Cell[]; rect?: Rect } }
+    | { name: "Hidden"; data: Record<string, never> }
     | { name: "ConditionAdded"; data: { actor: ActorID; condition: Condition } }
     | { name: "ConditionRemoved"; data: { actor: ActorID; name: string } }
     | { name: "CombatStarted"; data: { order: InitEntry[] } }
@@ -189,3 +212,5 @@ export type ServerMsg =
   | { type: "reject"; id: string; code: string; message: string }
   | { type: "error"; message: string }
   | { type: "pong" };
+
+export const HIDDEN_ACTOR = "hidden"; // game.HiddenActor

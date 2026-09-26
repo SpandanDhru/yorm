@@ -10,8 +10,9 @@ const QUICK = [
   { label: "Dis", text: "2d20kl1" },
 ];
 
-export function LogPanel({ game, feed, command }: { game: GameState; feed: FeedLine[]; command: Command }) {
+export function LogPanel({ game, feed, command, isDM }: { game: GameState; feed: FeedLine[]; command: Command; isDM: boolean }) {
   const [text, setText] = useState("");
+  const [secret, setSecret] = useState(false);
   const [history, setHistory] = useState<string[]>([]);
   const [back, setBack] = useState(-1); // position while browsing history with the arrow keys
   const end = useRef<HTMLLIElement>(null);
@@ -20,6 +21,7 @@ export function LogPanel({ game, feed, command }: { game: GameState; feed: FeedL
   type Entry = { kind: "roll"; seq: number; roll: Roll } | { kind: "feed"; seq: number; text: string };
   const entries: Entry[] = [
     ...game.rolls.map((r): Entry => ({ kind: "roll", seq: r.seq, roll: r })),
+    ...(game.secret_rolls ?? []).map((r): Entry => ({ kind: "roll", seq: r.seq, roll: r })),
     ...feed.map((f): Entry => ({ kind: "feed", seq: f.seq, text: f.text })),
   ].sort((a, b) => a.seq - b.seq);
   const last = entries.at(-1)?.seq;
@@ -34,7 +36,7 @@ export function LogPanel({ game, feed, command }: { game: GameState; feed: FeedL
     e.preventDefault();
     const line = text.replace(/^\s*\/r(oll)?\b/i, "").trim();
     if (!line) return;
-    command("roll_dice", { text: line });
+    command("roll_dice", { text: line, secret: isDM && secret });
     setHistory((h) => [line, ...h.filter((x) => x !== line)].slice(0, 20));
     setBack(-1);
     setText("");
@@ -77,6 +79,12 @@ export function LogPanel({ game, feed, command }: { game: GameState; feed: FeedL
           />
           <button disabled={!text.trim()}>Roll</button>
         </div>
+        {isDM && (
+          <label className="inline">
+            <input type="checkbox" checked={secret} onChange={(e) => setSecret(e.target.checked)} />
+            Secret (only you see it)
+          </label>
+        )}
         <div className="row quick">
           {QUICK.map((q) => (
             <button key={q.label} type="button" className="secondary small" onClick={() => setText(q.text + (text.match(/[+-]\d+$/)?.[0] ?? ""))}>
@@ -98,6 +106,12 @@ function RollLine({ roll, who }: { roll: Roll; who: string }) {
       <div>
         <strong>{who}</strong> {roll.label && <span>{roll.label}: </span>}
         <span className="muted">{roll.expr}</span>
+        {roll.secret && (
+          <span title="Secret: only the DM sees this" aria-label="secret roll">
+            {" "}
+            🔒
+          </span>
+        )}
         {roll.physical && (
           <span title="Rolled on real dice" aria-label="physical roll">
             {" "}
