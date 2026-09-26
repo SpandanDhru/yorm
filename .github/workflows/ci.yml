@@ -15,6 +15,7 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.14
+          args: --build-tags=integration # lint the integration tests too
 
   test:
     runs-on: ubuntu-latest

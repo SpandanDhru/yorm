@@ -48,4 +48,4 @@ fuzz:
 	go test -run=^$$ -fuzz=FuzzParseLine -fuzztime=30s ./internal/dice
 
 lint:
-	golangci-lint run
+	golangci-lint run --build-tags=integration
