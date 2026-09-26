@@ -8,6 +8,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/SpandanDhru/yorm/internal/auth"
+	"github.com/SpandanDhru/yorm/internal/metrics"
 )
 
 // conn is one connected client. The server's handler goroutine reads, a
@@ -46,6 +47,7 @@ func (c *conn) enqueue(msg []byte) bool {
 	case <-c.ctx.Done():
 		return false
 	default:
+		metrics.SendBufferDrops.Inc()
 		c.fail(websocket.StatusTryAgainLater, "send buffer full")
 		return false
 	}

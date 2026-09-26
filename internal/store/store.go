@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/SpandanDhru/yorm/internal/game"
+	"github.com/SpandanDhru/yorm/internal/metrics"
 )
 
 var (
@@ -32,6 +34,10 @@ type Session struct {
 
 type Postgres struct {
 	pool *pgxpool.Pool
+
+	// With group commit on, appends queue here for the writers.
+	queue   chan *appendReq
+	writers sync.WaitGroup
 }
 
 func New(pool *pgxpool.Pool) *Postgres {
@@ -207,26 +213,166 @@ func (p *Postgres) Append(ctx context.Context, sessionID string, evs []game.Even
 	if len(evs) == 0 {
 		return nil
 	}
-	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
-		return appendTx(ctx, tx, sessionID, evs)
-	})
+	var err error
+	if p.queue == nil {
+		err = appendTx(ctx, p.pool, sessionID, evs)
+	} else {
+		err = p.appendGrouped(ctx, sessionID, evs)
+	}
 	if err != nil && !errors.Is(err, ErrConflict) {
 		return fmt.Errorf("store: append: %w", err)
 	}
 	return err
 }
 
-func appendTx(ctx context.Context, tx pgx.Tx, sessionID string, evs []game.Event) error {
+// GroupCommit makes appends share transactions: writers goroutines each
+// take whatever appends are queued, from any sessions, up to maxBatch,
+// and commit them together, so one disk flush covers many commands. When
+// load is light a batch is a single append, so latency doesn't grow.
+// Call Close to stop the writers.
+func (p *Postgres) GroupCommit(writers, maxBatch int) {
+	p.queue = make(chan *appendReq, writers*maxBatch)
+	for range writers {
+		p.writers.Add(1)
+		go func() {
+			defer p.writers.Done()
+			p.writer(maxBatch)
+		}()
+	}
+}
+
+// Close stops the group-commit writers after they finish what's queued.
+func (p *Postgres) Close() {
+	if p.queue != nil {
+		close(p.queue)
+		p.writers.Wait()
+	}
+}
+
+type appendReq struct {
+	sql  string
+	args []any
+	done chan error // buffered
+}
+
+func (p *Postgres) appendGrouped(ctx context.Context, sessionID string, evs []game.Event) error {
+	sql, args, err := appendStmt(sessionID, evs)
+	if err != nil {
+		return err
+	}
+	req := &appendReq{sql: sql, args: args, done: make(chan error, 1)}
+	select {
+	case p.queue <- req:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-req.done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err() // it may still commit; the actor's next append will tell
+	}
+}
+
+func (p *Postgres) writer(maxBatch int) {
+	for first := range p.queue {
+		batch := []*appendReq{first}
+	fill:
+		for len(batch) < maxBatch {
+			select {
+			case r, ok := <-p.queue:
+				if !ok {
+					break fill
+				}
+				batch = append(batch, r)
+			default:
+				break fill
+			}
+		}
+		metrics.AppendBatch.Observe(float64(len(batch)))
+		p.commit(batch)
+	}
+}
+
+// commit runs a batch as one pgx batch, which Postgres executes as one
+// implicit transaction: one round trip and one flush. Each statement
+// reports its own conflict. If a statement errors, the whole batch rolls
+// back, and each append is retried on its own.
+func (p *Postgres) commit(batch []*appendReq) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if len(batch) == 1 {
+		batch[0].done <- p.exec(ctx, batch[0])
+		return
+	}
+	b := &pgx.Batch{}
+	for _, r := range batch {
+		b.Queue(r.sql, r.args...)
+	}
+	br := p.pool.SendBatch(ctx, b)
+	results := make([]error, len(batch))
+	failed := false
+	for i := range batch {
+		tag, err := br.Exec()
+		switch {
+		case err != nil:
+			failed = true
+		case tag.RowsAffected() == 0:
+			results[i] = ErrConflict
+		}
+	}
+	closeErr := br.Close()
+	if failed {
+		for _, r := range batch {
+			r.done <- p.exec(ctx, r)
+		}
+		return
+	}
+	for i, r := range batch {
+		if closeErr != nil {
+			results[i] = closeErr // the commit itself failed
+		}
+		r.done <- results[i]
+	}
+}
+
+func (p *Postgres) exec(ctx context.Context, r *appendReq) error {
+	tag, err := p.pool.Exec(ctx, r.sql, r.args...)
+	return appendResult(tag, err)
+}
+
+func appendResult(tag pgconn.CommandTag, err error) error {
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.As(err, &pgErr) && pgErr.Code == "23505": // unique_violation on (session_id, seq)
+		return ErrConflict
+	case err != nil:
+		return err
+	case tag.RowsAffected() == 0:
+		return ErrConflict
+	}
+	return nil
+}
+
+type execer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+// appendStmt builds the statement that appends evs for a session in one
+// go: it moves the session's last_seq forward only from the expected value
+// and inserts the events only if that matched, so a stale writer (a second
+// actor for the session) inserts nothing and affects no rows.
+func appendStmt(sessionID string, evs []game.Event) (string, []any, error) {
 	n := len(evs)
 	seqs, names, bys, causes, datas, ats := make([]int64, n), make([]string, n), make([]string, n), make([]*string, n), make([]string, n), make([]time.Time, n)
 	versions := make([]int16, n)
 	for i, ev := range evs {
 		if ev.Seq != evs[0].Seq+int64(i) {
-			return fmt.Errorf("seqs not consecutive at %d", ev.Seq)
+			return "", nil, fmt.Errorf("seqs not consecutive at %d", ev.Seq)
 		}
 		data, err := json.Marshal(ev.Data)
 		if err != nil {
-			return err
+			return "", nil, err
 		}
 		seqs[i], names[i], bys[i], datas[i], ats[i] = ev.Seq, ev.Name, string(ev.By), string(data), ev.At
 		versions[i] = int16(game.Version(ev.Name)) //nolint:gosec // versions are small
@@ -234,27 +380,25 @@ func appendTx(ctx context.Context, tx pgx.Tx, sessionID string, evs []game.Event
 			causes[i] = &evs[i].Cause
 		}
 	}
-
-	// Moving last_seq forward only from the expected value serializes
-	// writers: a second actor for the session matches no row.
-	tag, err := tx.Exec(ctx,
-		`UPDATE sessions SET last_seq = $3 WHERE id = $1 AND last_seq = $2`,
-		sessionID, seqs[0]-1, seqs[n-1])
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrConflict
-	}
-	_, err = tx.Exec(ctx, `
+	return `
+		WITH moved AS (
+			UPDATE sessions SET last_seq = $10 WHERE id = $1 AND last_seq = $9 RETURNING 1
+		)
 		INSERT INTO events (session_id, seq, name, by_user, cause, data, version, at)
 		SELECT $1, seq, name, by_user, cause, data::jsonb, version, at
 		FROM unnest($2::bigint[], $3::text[], $4::text[], $5::text[], $6::text[], $7::smallint[], $8::timestamptz[])
-			AS e(seq, name, by_user, cause, data, version, at)`,
-		sessionID, seqs, names, bys, causes, datas, versions, ats)
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation on (session_id, seq)
-		return ErrConflict
+			AS e(seq, name, by_user, cause, data, version, at)
+		WHERE EXISTS (SELECT 1 FROM moved)`,
+		[]any{sessionID, seqs, names, bys, causes, datas, versions, ats, seqs[0] - 1, seqs[n-1]}, nil
+}
+
+// appendTx runs appendStmt on its own: one round trip, no explicit
+// transaction.
+func appendTx(ctx context.Context, db execer, sessionID string, evs []game.Event) error {
+	sql, args, err := appendStmt(sessionID, evs)
+	if err != nil {
+		return err
 	}
-	return err
+	tag, err := db.Exec(ctx, sql, args...)
+	return appendResult(tag, err)
 }

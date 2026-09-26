@@ -16,6 +16,7 @@ import (
 	"github.com/SpandanDhru/yorm/internal/auth"
 	"github.com/SpandanDhru/yorm/internal/game"
 	"github.com/SpandanDhru/yorm/internal/ids"
+	"github.com/SpandanDhru/yorm/internal/metrics"
 	"github.com/SpandanDhru/yorm/internal/store"
 )
 
@@ -171,6 +172,7 @@ func (m *Manager) load(id string) (*actor, error) {
 		r.add(recentEvent{ev: ev})
 	}
 
+	metrics.SessionLoad.Observe(time.Since(start).Seconds())
 	log.Info("session started", "snapshot", snapSeq, "replayed", len(evs), "seq", state.Seq, "took", time.Since(start))
 	a := &actor{
 		id:       id,

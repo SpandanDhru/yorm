@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/SpandanDhru/yorm/internal/auth"
+	"github.com/SpandanDhru/yorm/internal/metrics"
 	"github.com/SpandanDhru/yorm/internal/ws"
 )
 
@@ -28,6 +29,7 @@ type Deps struct {
 	Sessions  Commander
 	UploadDir string // where map images are stored
 	WebDir    string // built frontend to serve; empty to serve none
+	Pprof     bool   // serve /debug/pprof, for profiling under load
 }
 
 // NewRouter builds the HTTP handler. It does not log request URLs, because
@@ -37,6 +39,10 @@ func NewRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Get("/healthz", healthz(d.Log, d.Health))
+	r.Handle("/metrics", metrics.Handler())
+	if d.Pprof {
+		r.Mount("/debug", middleware.Profiler())
+	}
 	r.Get("/ws/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		d.WS.Serve(w, r, chi.URLParam(r, "id"))
 	})

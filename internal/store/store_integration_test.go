@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strconv"
 	"testing"
@@ -171,4 +172,50 @@ func TestStore(t *testing.T) {
 			t.Fatalf("err = %v, want ErrNotFound", err)
 		}
 	})
+}
+
+// With group commit, appends from many sessions share transactions; each
+// still succeeds or conflicts on its own.
+func TestGroupCommit(t *testing.T) {
+	s := newStore(t)
+	s.GroupCommit(2, 16)
+	t.Cleanup(s.Close)
+	ctx := context.Background()
+	const sessions, perSession = 20, 30
+	for i := range sessions {
+		id := "ses_g" + strconv.Itoa(i)
+		if err := s.CreateSession(ctx, Session{ID: id, Name: id, InviteCode: "x"}, dmMember); err != nil {
+			t.Fatal(err)
+		}
+	}
+	errs := make(chan error, sessions)
+	for i := range sessions {
+		go func() {
+			id := "ses_g" + strconv.Itoa(i)
+			for seq := int64(2); seq < 2+perSession; seq++ {
+				if err := s.Append(ctx, id, []game.Event{ev(seq, game.TokenRemoved{Token: "t"})}); err != nil {
+					errs <- fmt.Errorf("%s seq %d: %w", id, seq, err)
+					return
+				}
+				// A stale write, racing alongside, must conflict without
+				// disturbing the others in its batch.
+				if err := s.Append(ctx, id, []game.Event{ev(seq, game.TokenRemoved{Token: "t"})}); !errors.Is(err, ErrConflict) {
+					errs <- fmt.Errorf("%s stale seq %d: %w, want ErrConflict", id, seq, err)
+					return
+				}
+			}
+			errs <- nil
+		}()
+	}
+	for range sessions {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range sessions {
+		evs, err := s.LoadAfter(ctx, "ses_g"+strconv.Itoa(i), 0)
+		if err != nil || len(evs) != 1+perSession {
+			t.Fatalf("session %d has %d events, %v; want %d", i, len(evs), err, 1+perSession)
+		}
+	}
 }

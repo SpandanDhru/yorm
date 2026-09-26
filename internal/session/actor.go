@@ -12,6 +12,7 @@ import (
 
 	"github.com/SpandanDhru/yorm/internal/auth"
 	"github.com/SpandanDhru/yorm/internal/game"
+	"github.com/SpandanDhru/yorm/internal/metrics"
 	"github.com/SpandanDhru/yorm/internal/store"
 )
 
@@ -167,9 +168,11 @@ func (a *actor) saveSnapshot(seq int64, doc []byte) {
 	defer cancel()
 	start := time.Now()
 	if err := a.store.SaveSnapshot(ctx, a.id, seq, snapshotFormat, doc); err != nil {
+		metrics.Snapshots.WithLabelValues("error").Inc()
 		a.log.Error("snapshot failed", "seq", seq, "err", err)
 		return
 	}
+	metrics.Snapshots.WithLabelValues("ok").Inc()
 	a.savedSeq.Store(seq)
 	a.log.Debug("snapshot saved", "seq", seq, "bytes", len(doc), "took", time.Since(start))
 }
@@ -229,19 +232,32 @@ func (a *actor) sendView(c *Client) {
 // sync brings a client up to date: with the events it missed if they are
 // few and still in memory, otherwise with a snapshot.
 func (a *actor) sync(m syncMsg) {
+	if m.lastSeq > 0 {
+		metrics.Reconnects.Inc()
+	}
 	if m.lastSeq > 0 && m.lastSeq <= a.state.Seq && a.state.Seq-m.lastSeq < int64(a.opts.CatchupEvents) {
 		if evs, ok := a.recent.catchUp(a.viewer(m.client), m.lastSeq, a.state.Seq); ok {
+			metrics.CatchUps.WithLabelValues("events").Inc()
 			m.client.Send(mustMarshal(eventsMsg{Type: "events", Seq: a.state.Seq, Events: evs}))
 			return
 		}
 	}
+	metrics.CatchUps.WithLabelValues("snapshot").Inc()
 	a.sendView(m.client)
 }
 
 func (a *actor) handleCommand(m cmdMsg) (stop bool) {
+	start := time.Now()
+	result := "ok"
+	defer func() {
+		metrics.Commands.WithLabelValues(m.cmd.Name, result).Inc()
+		metrics.CommandLatency.Observe(time.Since(start).Seconds())
+	}()
+
 	// A command seen before (a retry after a reconnect) gets its original
 	// answer and is not applied again.
 	if ans, ok := a.answered.get(m.cmd.By, m.cmd.ID); ok {
+		result = "duplicate"
 		a.answer(m, ans)
 		return false
 	}
@@ -252,11 +268,13 @@ func (a *actor) handleCommand(m cmdMsg) (stop bool) {
 	switch {
 	case errors.As(err, &r):
 		ans.Reject = r
+		result = r.Code
 	case err != nil:
 		panic("unreachable: Decide returns only *game.Reject errors")
 	default:
 		if err := a.commit(m.cmd.By, m.cmd.ID, payloads...); err != nil {
 			a.log.Error("append failed", "cmd", m.cmd.Name, "err", err)
+			result = game.CodeUnavailable
 			// Not remembered: nothing was saved, so a retry should try again.
 			a.answer(m, answer{Reject: &game.Reject{Code: game.CodeUnavailable, Message: "could not save the change, try again"}})
 			return errors.Is(err, store.ErrConflict)
@@ -298,10 +316,13 @@ func (a *actor) commit(by game.UserID, cause string, payloads ...game.Payload) e
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), a.opts.AppendTimeout)
 	defer cancel()
+	start := time.Now()
 	if err := a.store.Append(ctx, a.id, evs); err != nil {
 		return err
 	}
+	metrics.EventAppend.Observe(time.Since(start).Seconds())
 	for _, ev := range evs {
+		start := time.Now()
 		// What each player is sent depends on whether ev changes what they
 		// can see, so compare before and after.
 		players := a.players()
@@ -317,6 +338,7 @@ func (a *actor) commit(by game.UserID, cause string, payloads ...game.Payload) e
 		}
 		a.broadcast(ev, views)
 		a.recent.add(recentEvent{ev: ev, views: views})
+		metrics.Broadcast.Observe(time.Since(start).Seconds())
 	}
 	if a.state.Seq-a.savedSeq.Load() >= int64(a.opts.SnapshotEvery) {
 		a.snapshot()

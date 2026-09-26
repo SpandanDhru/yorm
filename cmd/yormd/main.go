@@ -21,6 +21,7 @@ import (
 	"github.com/SpandanDhru/yorm/internal/config"
 	"github.com/SpandanDhru/yorm/internal/db"
 	"github.com/SpandanDhru/yorm/internal/httpapi"
+	"github.com/SpandanDhru/yorm/internal/metrics"
 	"github.com/SpandanDhru/yorm/internal/session"
 	"github.com/SpandanDhru/yorm/internal/store"
 	"github.com/SpandanDhru/yorm/internal/ws"
@@ -52,7 +53,7 @@ func run(log *slog.Logger) error {
 	if err := db.Migrate(ctx, cfg.DatabaseURL); err != nil {
 		return err
 	}
-	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	pool, err := db.Open(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
 	if err != nil {
 		return err
 	}
@@ -66,16 +67,22 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("upload dir: %w", err)
 	}
 	st := store.New(pool)
+	if cfg.GroupCommit > 0 {
+		st.GroupCommit(cfg.GroupCommit, 64)
+		defer st.Close() // after the sessions stop, before the pool closes
+	}
 	sessions := session.NewManager(st, log, session.DefaultOptions())
 	opts := ws.DefaultOptions()
 	opts.OriginPatterns = cfg.AllowedOrigins
 	wsSrv := ws.NewServer(signer, sessions, log, opts)
+	metrics.Gauge("yorm_active_sessions", "Sessions with a running actor.", func() float64 { return float64(sessions.Active()) })
+	metrics.Gauge("yorm_active_connections", "Open WebSocket connections.", func() float64 { return float64(wsSrv.ConnCount()) })
 
 	srv := &http.Server{
 		Addr: cfg.Addr,
 		Handler: httpapi.NewRouter(httpapi.Deps{
 			Log: log, WS: wsSrv, Health: pool.Ping, Signer: signer, Store: st, Sessions: sessions,
-			UploadDir: cfg.UploadDir, WebDir: cfg.WebDir,
+			UploadDir: cfg.UploadDir, WebDir: cfg.WebDir, Pprof: cfg.Pprof,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

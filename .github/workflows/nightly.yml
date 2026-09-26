@@ -1,0 +1,61 @@
+name: nightly
+
+# The slow suites: the chaos test, and the load test at the spec's size
+# with the server limited to 2 CPUs. Results go to the job summary and an
+# artifact. Run it by hand from the Actions tab too.
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      sessions:
+        description: Sessions for the load test (6 clients each)
+        default: "500"
+      interval:
+        description: Average time between one bot's actions
+        default: 3s
+
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Chaos, bots, and recovery time
+        run: |
+          go test -count=1 -tags=integration -v -run 'TestChaos|TestBotsPlay|TestRecoveryTime' ./internal/bot ./internal/session | tee chaos.txt
+          { echo '### Chaos and recovery'; echo '```'; grep -E '_test.go:[0-9]+:|^(ok|FAIL|--- )' chaos.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  load:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Start Postgres and a 2-CPU yormd
+        run: |
+          docker network create yorm
+          docker run -d --name db --network yorm --cpus=2 -e POSTGRES_USER=yorm -e POSTGRES_PASSWORD=yorm -e POSTGRES_DB=yorm postgres:16-alpine
+          docker build -t yormd .
+          until docker exec db pg_isready -U yorm -d yorm; do sleep 1; done; sleep 2
+          docker run -d --name yormd --network yorm --cpus=2 -p 8080:8080 \
+            -e DATABASE_URL='postgres://yorm:yorm@db:5432/yorm?sslmode=disable' \
+            -e YORM_TOKEN_SECRET=nightly-load-test-secret-0123456789abcdef yormd
+          timeout 60 bash -c 'until curl -sf localhost:8080/healthz; do sleep 1; done'
+          docker exec db sh -c 'cd /var/lib/postgresql/data && pg_test_fsync -s 2' | grep -E 'fdatasync' | head -1 | tee fsync.txt
+      - name: Load test
+        run: |
+          go run ./cmd/yormload -url http://localhost:8080 -sessions ${{ inputs.sessions || 500 }} \
+            -interval ${{ inputs.interval || '3s' }} -duration 2m -ramp 60s -json load.json | tee load.txt
+      - name: Publish
+        if: always()
+        run: |
+          { echo '### Load test'; sed -n '/^| Metric/,$p' load.txt; echo; echo "Postgres disk flush on this runner: $(cat fsync.txt)"; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: load-test
+          path: load.json

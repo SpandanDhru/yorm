@@ -14,8 +14,16 @@ import (
 )
 
 // Open connects to Postgres and checks that the database answers.
-func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, url)
+// maxConns sizes the pool; 0 keeps pgx's default.
+func Open(ctx context.Context, url string, maxConns ...int32) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, fmt.Errorf("db: open: %w", err)
+	}
+	if len(maxConns) > 0 && maxConns[0] > 0 {
+		cfg.MaxConns = maxConns[0]
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("db: open: %w", err)
 	}

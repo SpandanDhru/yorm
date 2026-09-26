@@ -2,7 +2,7 @@ export DATABASE_URL ?= postgres://yorm:yorm@localhost:5432/yorm?sslmode=disable
 export YORM_TOKEN_SECRET ?= dev-only-secret-do-not-use-in-prod-0123456789
 export YORM_ALLOWED_ORIGINS ?= localhost:5173
 
-.PHONY: db-up db-down run web-install web-dev web-build web-test fixtures token test race integration fuzz lint
+.PHONY: db-up db-down run monitoring web-install web-dev web-build web-test fixtures token test race integration chaos load fuzz lint
 
 db-up:
 	docker compose up -d --wait postgres
@@ -12,6 +12,10 @@ db-down:
 
 run:
 	go run ./cmd/yormd
+
+# Prometheus on :9090 and Grafana on :3000, with the Yorm dashboard.
+monitoring:
+	docker compose --profile monitoring up -d --build
 
 web-install:
 	cd web && npm ci
@@ -43,9 +47,19 @@ race:
 integration:
 	go test -race -count=1 -tags=integration ./...
 
+# Kills a real yormd mid-game and checks nothing is lost.
+chaos:
+	go test -count=1 -tags=integration -v -run TestChaos ./internal/bot
+
+# Usage: make load SESSIONS=500 URL=http://localhost:8080
+load:
+	go run ./cmd/yormload -url $(or $(URL),http://localhost:8080) -sessions $(or $(SESSIONS),50) -duration $(or $(DURATION),1m)
+
 fuzz:
 	go test -run=^$$ -fuzz=FuzzVerify -fuzztime=30s ./internal/auth
 	go test -run=^$$ -fuzz=FuzzParseLine -fuzztime=30s ./internal/dice
+	go test -run=^$$ -fuzz=FuzzDecide -fuzztime=30s ./internal/game
+	go test -run=^$$ -fuzz=FuzzDecodePayload -fuzztime=30s ./internal/game
 
 lint:
 	golangci-lint run --build-tags=integration
