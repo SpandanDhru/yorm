@@ -64,12 +64,13 @@ CI runs lint, unit, race, and integration tests on every push, and a [nightly jo
 | | p50 | p99 | Lost / out of order | Diverged |
 |---|---|---|---|---|
 | Target | ≤ 10 ms | ≤ 50 ms | 0 | 0 |
-| Postgres on RAM disk (isolates the server) | **0.9 ms** | **3.5–5 ms** | 0 | 0 |
-| Durable Postgres, dev machine, best runs | 4.6–5.3 ms | 10–27 ms | 0 | 0 |
+| **GitHub-hosted Linux VM, durable Postgres** (nightly job) | **1.9 ms** | **38 ms** | 0 | 0 |
+| Dev machine, Postgres on a RAM disk (isolates the server) | 0.9 ms | 3.5–5 ms | 0 | 0 |
+| Dev machine, durable Postgres, best runs | 4.6–5.3 ms | 10–27 ms | 0 | 0 |
 
-Every run, however slow, lost nothing and ended with zero divergence across 3,000 clients (850,000 events). yormd itself used about **0.6 of its 2 cores** and ~650 MB.
+Every run, however slow, lost nothing and ended with zero divergence across 3,000 clients (850,000 events per run). yormd itself used about **0.6 of its 2 cores** and ~700 MB.
 
-**What latency depends on.** On a durable disk, each command costs a flush of Postgres's write-ahead log. The development machine (Docker Desktop on WSL2) manages about 440 flushes a second, and its flush times are erratic: identical runs ranged from a p99 of 10 ms to several seconds, while the same load with Postgres on a RAM disk was consistently under 5 ms. The nightly job reports the same test on a GitHub-hosted Linux VM.
+**What latency depends on.** On a durable disk, each command costs a flush of Postgres's write-ahead log. The development machine (Docker Desktop on WSL2) manages about 440 flushes a second, and its flush times are erratic: identical runs ranged from a p99 of 10 ms to several seconds, while the same load with Postgres on a RAM disk was consistently under 5 ms. On a GitHub-hosted Linux VM the same test passes on durable storage (above); the nightly job keeps measuring it there.
 
 **How it got there.** The first full-size run had a p99 of 11.8 s. Server metrics (`yorm_event_append_seconds`) showed commits queueing behind the disk, not CPU:
 

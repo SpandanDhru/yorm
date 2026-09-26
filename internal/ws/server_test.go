@@ -224,6 +224,10 @@ func TestUnknownSessionClosesWith4404(t *testing.T) {
 func TestStoppedSessionClosesWith1012(t *testing.T) {
 	h := newHarness(t, DefaultOptions())
 	c, _ := h.connect("ses_1", "usr_dm", auth.RoleDM)
+	// The welcome comes before the join is saved; a sync's answer comes
+	// after, so only then is it safe to make the next save fail.
+	writeJSON(t, c, `{"type":"sync"}`)
+	readMsg(t, c)
 	h.store.FailNextAppend(store.ErrConflict)
 	writeJSON(t, c, `{"type":"command","id":"c1","name":"set_map","args":{"image_url":"/uploads/m.png","cols":8,"rows":8}}`)
 	if m := readMsg(t, c); m.Type != "reject" || m.Code != "unavailable" {

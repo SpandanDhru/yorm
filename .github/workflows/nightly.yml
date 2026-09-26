@@ -45,7 +45,7 @@ jobs:
             -e DATABASE_URL='postgres://yorm:yorm@db:5432/yorm?sslmode=disable' \
             -e YORM_TOKEN_SECRET=nightly-load-test-secret-0123456789abcdef yormd
           timeout 60 bash -c 'until curl -sf localhost:8080/healthz; do sleep 1; done'
-          docker exec db sh -c 'cd /var/lib/postgresql/data && pg_test_fsync -s 2' | grep -E 'fdatasync' | head -1 | tee fsync.txt
+          docker exec db sh -c 'cd /var/lib/postgresql/data && pg_test_fsync -s 2' | grep -E '^[[:space:]]+fdatasync' | head -1 | tee fsync.txt
       - name: Load test
         run: |
           go run ./cmd/yormload -url http://localhost:8080 -sessions ${{ inputs.sessions || 500 }} \
