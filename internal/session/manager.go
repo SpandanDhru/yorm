@@ -21,9 +21,13 @@ import (
 
 // Store is the persistence the actors need; *store.Postgres implements it.
 type Store interface {
-	Load(ctx context.Context, sessionID string) ([]game.Event, error)
+	// LoadAfter returns the events after seq, or store.ErrNotFound.
+	LoadAfter(ctx context.Context, sessionID string, after int64) ([]game.Event, error)
 	Append(ctx context.Context, sessionID string, evs []game.Event) error
 	Member(ctx context.Context, sessionID string, user game.UserID) (game.Member, error)
+	SaveSnapshot(ctx context.Context, sessionID string, seq int64, format int, state []byte) error
+	// LatestSnapshot returns the newest snapshot in format, or store.ErrNotFound.
+	LatestSnapshot(ctx context.Context, sessionID string, format int) (seq int64, state []byte, err error)
 }
 
 type Options struct {
@@ -31,14 +35,25 @@ type Options struct {
 	AppendTimeout time.Duration
 	LoadTimeout   time.Duration
 	InboxSize     int
+
+	SnapshotEvery    int           // snapshot after this many events...
+	SnapshotInterval time.Duration // ...or this long, if anything changed
+	SnapshotTimeout  time.Duration
+	CatchupEvents    int // a client this many events behind gets a snapshot instead
+	RememberCommands int // command answers kept for retries
 }
 
 func DefaultOptions() Options {
 	return Options{
-		IdleTimeout:   30 * time.Minute,
-		AppendTimeout: 5 * time.Second,
-		LoadTimeout:   10 * time.Second,
-		InboxSize:     256,
+		IdleTimeout:      30 * time.Minute,
+		AppendTimeout:    5 * time.Second,
+		LoadTimeout:      10 * time.Second,
+		InboxSize:        256,
+		SnapshotEvery:    200,
+		SnapshotInterval: 5 * time.Minute,
+		SnapshotTimeout:  10 * time.Second,
+		CatchupEvents:    500,
+		RememberCommands: 1000,
 	}
 }
 
@@ -113,35 +128,66 @@ func (m *Manager) get(ctx context.Context, id string) (*actor, error) {
 	}
 }
 
-// load builds an actor by replaying the session's events.
+// load builds an actor from the latest snapshot plus the events after it.
 func (m *Manager) load(id string) (*actor, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), m.opts.LoadTimeout)
 	defer cancel()
 	start := time.Now()
-	evs, err := m.store.Load(ctx, id)
+	log := m.log.With("session", id)
+
+	state, answered := game.NewState(id), newAnswers(m.opts.RememberCommands)
+	snapSeq, doc, err := m.store.LatestSnapshot(ctx, id, snapshotFormat)
+	switch {
+	case err == nil:
+		if s, a, err := decodeSnapshot(doc, m.opts.RememberCommands); err != nil {
+			// Replaying from the start is slower but always right.
+			log.Warn("unreadable snapshot, replaying all events", "seq", snapSeq, "err", err)
+		} else {
+			state, answered = s, a
+		}
+	case !errors.Is(err, store.ErrNotFound):
+		return nil, err
+	}
+
+	evs, err := m.store.LoadAfter(ctx, id, state.Seq)
 	if err != nil {
 		return nil, err
 	}
-	state := game.NewState(id)
 	for _, ev := range evs {
 		state.Apply(ev)
 	}
-	log := m.log.With("session", id)
-	log.Info("session started", "events", len(evs), "seq", state.Seq, "replay", time.Since(start))
-	return &actor{
-		id:      id,
-		log:     log,
-		store:   m.store,
-		opts:    m.opts,
-		env:     game.Env{NewID: ids.New, Roll: roll},
-		now:     time.Now,
-		retire:  m.retire,
-		state:   state,
-		clients: make(map[*Client]struct{}),
-		inbox:   make(chan any, m.opts.InboxSize),
-		quit:    make(chan struct{}),
-		done:    make(chan struct{}),
-	}, nil
+	answered.learn(evs)
+
+	// Keep the last events in memory for clients catching up, including
+	// ones from before the snapshot.
+	r := recent{max: m.opts.CatchupEvents}
+	tail := evs
+	if len(evs) < r.max && state.Seq > int64(len(evs)) {
+		if tail, err = m.store.LoadAfter(ctx, id, max(0, state.Seq-int64(r.max))); err != nil {
+			return nil, err
+		}
+	}
+	r.add(tail...)
+
+	log.Info("session started", "snapshot", snapSeq, "replayed", len(evs), "seq", state.Seq, "took", time.Since(start))
+	a := &actor{
+		id:       id,
+		log:      log,
+		store:    m.store,
+		opts:     m.opts,
+		env:      game.Env{NewID: ids.New, Roll: roll},
+		now:      time.Now,
+		retire:   m.retire,
+		state:    state,
+		clients:  make(map[*Client]struct{}),
+		answered: answered,
+		recent:   r,
+		inbox:    make(chan any, m.opts.InboxSize),
+		quit:     make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+	a.savedSeq.Store(snapSeq)
+	return a, nil
 }
 
 // roll is a fair die. crypto/rand is overkill for fairness, but it's cheap
@@ -227,9 +273,10 @@ func (h *Handle) Submit(ctx context.Context, cmd game.Command) error {
 	return h.a.send(ctx, cmdMsg{cmd: cmd, client: h.c})
 }
 
-// Sync asks for a snapshot of the current state.
-func (h *Handle) Sync(ctx context.Context) error {
-	return h.a.send(ctx, syncMsg{client: h.c})
+// Sync brings the client up to date from lastSeq: with the events it
+// missed, or a snapshot if that's too many or lastSeq is 0.
+func (h *Handle) Sync(ctx context.Context, lastSeq int64) error {
+	return h.a.send(ctx, syncMsg{client: h.c, lastSeq: lastSeq})
 }
 
 // Leave disconnects the client from the session.

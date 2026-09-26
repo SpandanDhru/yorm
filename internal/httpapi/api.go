@@ -28,6 +28,7 @@ type Store interface {
 	CreateSession(ctx context.Context, s store.Session, dm game.Member) error
 	Session(ctx context.Context, id string) (store.Session, error)
 	AddMember(ctx context.Context, sessionID string, m game.Member) error
+	Events(ctx context.Context, sessionID string, after int64, limit int) ([]game.Event, error)
 }
 
 // Commander runs a command in a live session; *session.Manager implements it.
@@ -246,6 +247,57 @@ func (a *api) saveImage(file io.Reader) (string, error) {
 		return "", err
 	}
 	return name, os.Rename(tmp.Name(), filepath.Join(a.UploadDir, name))
+}
+
+const (
+	defaultPage = 100
+	maxPage     = 1000
+)
+
+// eventHistory pages through a session's events, oldest first, for the DM:
+// ?after=<seq>&limit=<n>. next is the after to ask for the following page,
+// or null at the end.
+func (a *api) eventHistory(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "id")
+	claims, ok := a.bearer(w, r, sessionID)
+	if !ok {
+		return
+	}
+	if claims.Role != auth.RoleDM {
+		writeError(w, http.StatusForbidden, "only the DM can read the history")
+		return
+	}
+	after, limit := int64(0), defaultPage
+	var err error
+	if v := r.URL.Query().Get("after"); v != "" {
+		if after, err = strconv.ParseInt(v, 10, 64); err != nil || after < 0 {
+			writeError(w, http.StatusBadRequest, "after must be a seq")
+			return
+		}
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if limit, err = strconv.Atoi(v); err != nil || limit < 1 || limit > maxPage {
+			writeError(w, http.StatusBadRequest, "limit must be 1 to 1000")
+			return
+		}
+	}
+	evs, err := a.Store.Events(r.Context(), sessionID, after, limit)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "no such session")
+		return
+	}
+	if err != nil {
+		a.internalError(w, "load events", err)
+		return
+	}
+	resp := struct {
+		Events []game.Event `json:"events"`
+		Next   *int64       `json:"next"`
+	}{Events: evs}
+	if len(evs) == limit {
+		resp.Next = &evs[len(evs)-1].Seq
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 var uploadName = regexp.MustCompile(`^map_[a-z2-7]+\.(png|jpg|webp|gif)$`)

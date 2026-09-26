@@ -24,6 +24,7 @@ const (
 	CodeConflict       = "conflict"
 	CodeNotYourTurn    = "not_your_turn"
 	CodeOutOfMovement  = "out_of_movement"
+	CodeRateLimited    = "rate_limited"
 	CodeUnavailable    = "unavailable"
 )
 

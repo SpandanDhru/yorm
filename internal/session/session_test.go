@@ -38,14 +38,15 @@ func newManager(t *testing.T, st Store, opts Options) *Manager {
 
 // msg is any server-to-client message, decoded loosely.
 type msg struct {
-	Type  string          `json:"type"`
-	ID    string          `json:"id"`
-	Seq   int64           `json:"seq"`
-	Name  string          `json:"name"`
-	Cause string          `json:"cause"`
-	Code  string          `json:"code"`
-	Data  json.RawMessage `json:"data"`
-	State *game.State     `json:"state"`
+	Type   string          `json:"type"`
+	ID     string          `json:"id"`
+	Seq    int64           `json:"seq"`
+	Name   string          `json:"name"`
+	Cause  string          `json:"cause"`
+	Code   string          `json:"code"`
+	Data   json.RawMessage `json:"data"`
+	State  *game.State     `json:"state"`
+	Events []msg           `json:"events"`
 }
 
 // fakeClient records what the actor sends to one viewer.
@@ -105,7 +106,7 @@ func (fc *fakeClient) submit(id, name, args string) {
 
 func (fc *fakeClient) snapshot() *game.State {
 	fc.t.Helper()
-	if err := fc.h.Sync(context.Background()); err != nil {
+	if err := fc.h.Sync(context.Background(), 0); err != nil {
 		fc.t.Fatal(err)
 	}
 	return fc.expect("snapshot", "").State

@@ -7,6 +7,8 @@ export type Status = "connecting" | "open" | "reconnecting" | "gone";
 export interface Handlers {
   onMessage(msg: ServerMsg): void;
   onStatus(status: Status): void;
+  // lastSeq is the last event the client has applied, to sync from.
+  lastSeq(): number;
 }
 
 const MIN_BACKOFF_MS = 500;
@@ -23,6 +25,9 @@ export class Connection {
   private attempt = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
+  // Commands sent but not yet answered. They are resent, with the same IDs,
+  // after a reconnect; the server answers a repeat without applying it twice.
+  private outbox = new Map<string, { name: string; args: unknown }>();
 
   constructor(
     private readonly sessionId: string,
@@ -43,14 +48,16 @@ export class Connection {
   }
 
   sync(): void {
-    this.send({ type: "sync" });
+    this.send({ type: "sync", last_seq: this.handlers.lastSeq() });
   }
 
   // command sends a command and returns its ID, which the ack or reject
   // echoes, or null if not connected.
   command(name: string, args: unknown): string | null {
     const id = crypto.randomUUID();
-    return this.send({ type: "command", id, name, args }) ? id : null;
+    if (!this.send({ type: "command", id, name, args })) return null;
+    this.outbox.set(id, { name, args });
+    return id;
   }
 
   private send(msg: unknown): boolean {
@@ -72,13 +79,16 @@ export class Connection {
         this.attempt = 0;
         this.handlers.onStatus("open");
         this.sync();
+        for (const [id, c] of this.outbox) this.send({ type: "command", id, name: c.name, args: c.args });
       }
+      if (msg.type === "ack" || msg.type === "reject") this.outbox.delete(msg.id);
       this.handlers.onMessage(msg);
     };
     ws.onclose = (e) => {
       if (this.ws !== ws || this.stopped) return;
       this.ws = null;
       if (e.code === SESSION_NOT_FOUND) {
+        this.outbox.clear();
         this.handlers.onStatus("gone");
         return;
       }

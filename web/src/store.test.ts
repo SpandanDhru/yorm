@@ -115,12 +115,34 @@ describe("reducer", () => {
     expect(tokenPos(s, "tok_1")).toEqual({ x: 1, y: 1 });
   });
 
-  it("draws the latest of several pending moves", () => {
+  it("draws the latest of several pending moves, until the session is gone", () => {
     let s = reducer(withGame(), { type: "move", id: "c1", move: { token: "tok_1", to: { x: 2, y: 2 } } });
     s = reducer(s, { type: "move", id: "c2", move: { token: "tok_1", to: { x: 3, y: 3 } } });
     expect(tokenPos(s, "tok_1")).toEqual({ x: 3, y: 3 });
-    s = reducer(s, { type: "disconnected" });
+    s = reducer(s, { type: "gone" });
     expect(tokenPos(s, "tok_1")).toEqual({ x: 1, y: 1 });
+  });
+
+  it("catches up from a batch of missed events", () => {
+    let s = reducer(withGame(), { type: "event", event: moved(6) }); // missed 4 and 5
+    expect(s.stale).toBe(true);
+    const placed = (seq: number) => ev(seq, { name: "TokenPlaced", data: { token: { ...rogue, id: `tok_${seq}` } } });
+    // The batch overlaps what we have, and runs past the event we saw early.
+    s = reducer(s, { type: "events", seq: 6, events: [moved(3), placed(4), placed(5), moved(6)] });
+    expect(s.stale).toBe(false);
+    expect(s.game?.seq).toBe(6);
+    expect(Object.keys(s.game!.tokens).sort()).toEqual(["tok_1", "tok_4", "tok_5"]);
+  });
+
+  it("stays stale if a batch has a gap", () => {
+    const s = reducer(withGame(), { type: "events", seq: 6, events: [moved(4), moved(6)] });
+    expect(s.game?.seq).toBe(4);
+    expect(s.stale).toBe(true);
+  });
+
+  it("an empty batch means already up to date", () => {
+    const s = reducer({ ...withGame(), stale: true }, { type: "events", seq: 3, events: [] });
+    expect(s.stale).toBe(false);
   });
 });
 

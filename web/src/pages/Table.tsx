@@ -40,6 +40,8 @@ function TableView({ seat }: { seat: Seat }) {
   const [notice, setNotice] = useState("");
   const [selected, setSelected] = useState<TokenID | null>(null);
   const conn = useRef<Connection | null>(null);
+  const seq = useRef(0); // the last event applied, for syncing after a reconnect
+  seq.current = table.game?.seq ?? 0;
 
   useEffect(() => {
     const c = new Connection(seat.session, seat.token, {
@@ -53,6 +55,9 @@ function TableView({ seat }: { seat: Seat }) {
             dispatch({ type: "event", event });
             break;
           }
+          case "events":
+            dispatch({ type: "events", events: msg.events, seq: msg.seq });
+            break;
           case "ack":
             dispatch({ type: "settle", id: msg.id });
             break;
@@ -67,8 +72,9 @@ function TableView({ seat }: { seat: Seat }) {
       },
       onStatus(s) {
         setStatus(s);
-        if (s !== "open") dispatch({ type: "disconnected" });
+        if (s === "gone") dispatch({ type: "gone" });
       },
+      lastSeq: () => seq.current,
     });
     conn.current = c;
     c.start();

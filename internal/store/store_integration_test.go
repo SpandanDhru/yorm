@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func TestStore(t *testing.T) {
 	})
 
 	t.Run("append and load round trip", func(t *testing.T) {
-		created, err := s.Load(ctx, "ses_1")
+		created, err := s.LoadAfter(ctx, "ses_1", 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -90,7 +91,7 @@ func TestStore(t *testing.T) {
 		if err := s.Append(ctx, "ses_1", more); err != nil {
 			t.Fatal(err)
 		}
-		got, err := s.Load(ctx, "ses_1")
+		got, err := s.LoadAfter(ctx, "ses_1", 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -113,14 +114,60 @@ func TestStore(t *testing.T) {
 		if err := s.Append(ctx, "ses_1", skipAhead); !errors.Is(err, ErrConflict) {
 			t.Fatalf("err = %v, want ErrConflict", err)
 		}
-		got, err := s.Load(ctx, "ses_1")
+		got, err := s.LoadAfter(ctx, "ses_1", 0)
 		if err != nil || len(got) != 4 {
 			t.Fatalf("Load after conflicts = %d events, %v; want 4", len(got), err)
 		}
 	})
 
+	t.Run("load after a seq, and page through history", func(t *testing.T) {
+		tail, err := s.LoadAfter(ctx, "ses_1", 2)
+		if err != nil || len(tail) != 2 || tail[0].Seq != 3 {
+			t.Fatalf("LoadAfter(2) = %d events from %v, %v", len(tail), tail, err)
+		}
+		page, err := s.Events(ctx, "ses_1", 1, 2)
+		if err != nil || len(page) != 2 || page[0].Seq != 2 || page[1].Seq != 3 {
+			t.Fatalf("Events(after 1, limit 2) = %+v, %v", page, err)
+		}
+		if none, err := s.Events(ctx, "ses_1", 4, 10); err != nil || len(none) != 0 {
+			t.Fatalf("Events past the end = %+v, %v", none, err)
+		}
+	})
+
+	t.Run("snapshots keep the latest three per format", func(t *testing.T) {
+		if _, _, err := s.LatestSnapshot(ctx, "ses_1", 1); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("no snapshot yet: err = %v", err)
+		}
+		for seq := int64(1); seq <= 5; seq++ {
+			if err := s.SaveSnapshot(ctx, "ses_1", seq, 1, []byte(`{"seq":`+strconv.FormatInt(seq, 10)+`}`)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.SaveSnapshot(ctx, "ses_1", 5, 1, []byte(`{"dup":true}`)); err != nil {
+			t.Fatalf("saving the same seq twice: %v", err)
+		}
+		seq, state, err := s.LatestSnapshot(ctx, "ses_1", 1)
+		if err != nil || seq != 5 || string(state) != `{"seq": 5}` {
+			t.Fatalf("latest = %d %s, %v", seq, state, err)
+		}
+		var n int
+		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM snapshots WHERE session_id = 'ses_1'`).Scan(&n); err != nil || n != KeepSnapshots {
+			t.Fatalf("kept %d snapshots, want %d (%v)", n, KeepSnapshots, err)
+		}
+		if _, _, err := s.LatestSnapshot(ctx, "ses_1", 2); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("a newer format found an old snapshot: %v", err)
+		}
+	})
+
+	t.Run("events are stored with their version", func(t *testing.T) {
+		var v int
+		if err := s.pool.QueryRow(ctx, `SELECT version FROM events WHERE session_id = 'ses_1' AND seq = 3`).Scan(&v); err != nil || v != 1 {
+			t.Fatalf("version = %d, %v", v, err)
+		}
+	})
+
 	t.Run("load missing session", func(t *testing.T) {
-		if _, err := s.Load(ctx, "ses_nope"); !errors.Is(err, ErrNotFound) {
+		if _, err := s.LoadAfter(ctx, "ses_nope", 0); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("err = %v, want ErrNotFound", err)
 		}
 	})

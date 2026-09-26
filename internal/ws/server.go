@@ -26,6 +26,8 @@ type Options struct {
 	MaxMissedPings  int
 	WriteTimeout    time.Duration
 	OriginPatterns  []string // extra allowed Origin hosts, e.g. "localhost:5173"
+	CommandRate     float64  // commands per second a client may send, on average
+	CommandBurst    int      // and in a burst
 }
 
 func DefaultOptions() Options {
@@ -35,6 +37,8 @@ func DefaultOptions() Options {
 		PingInterval:    20 * time.Second,
 		MaxMissedPings:  2,
 		WriteTimeout:    10 * time.Second,
+		CommandRate:     20,
+		CommandBurst:    20,
 	}
 }
 
@@ -91,6 +95,7 @@ func (s *Server) Serve(w http.ResponseWriter, r *http.Request, sessionID string)
 	wsConn.SetReadLimit(s.opts.MaxMessageBytes)
 
 	c := newConn(wsConn, claims, s.opts.SendBuffer)
+	c.limit = newBucket(s.opts.CommandRate, s.opts.CommandBurst, time.Now)
 	if !s.add(c) {
 		_ = wsConn.Close(websocket.StatusGoingAway, "server shutting down")
 		return
@@ -142,6 +147,8 @@ type clientMsg struct {
 	ID   string          `json:"id"`
 	Name string          `json:"name"`
 	Args json.RawMessage `json:"args"`
+	// LastSeq, on sync, is the last event the client applied.
+	LastSeq int64 `json:"last_seq"`
 }
 
 const maxCommandIDLen = 64
@@ -157,10 +164,14 @@ func (s *Server) handleMessage(c *conn, seat *session.Handle, msg []byte) {
 	case "ping":
 		c.enqueue(pongMsg)
 	case "sync":
-		err = seat.Sync(c.ctx)
+		err = seat.Sync(c.ctx, m.LastSeq)
 	case "command":
 		if m.ID == "" || len(m.ID) > maxCommandIDLen {
 			c.enqueue(errorMsg("command id must be 1 to 64 characters"))
+			return
+		}
+		if !c.limit.take() {
+			c.enqueue(rateLimitedMsg(m.ID))
 			return
 		}
 		err = seat.Submit(c.ctx, game.Command{ID: m.ID, Name: m.Name, Args: m.Args})
@@ -171,6 +182,16 @@ func (s *Server) handleMessage(c *conn, seat *session.Handle, msg []byte) {
 		// The session actor stopped; reconnecting starts a fresh one.
 		c.fail(websocket.StatusServiceRestart, "session restarting")
 	}
+}
+
+func rateLimitedMsg(id string) []byte {
+	b, _ := json.Marshal(struct {
+		Type    string `json:"type"`
+		ID      string `json:"id"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}{"reject", id, game.CodeRateLimited, "too many commands; slow down"})
+	return b
 }
 
 func errorMsg(message string) []byte {

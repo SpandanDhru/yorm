@@ -183,6 +183,7 @@ export type GameEvent = EventBase &
 export type ServerMsg =
   | { type: "welcome"; session: string; user: UserID; role: Role; caps: string[] }
   | { type: "snapshot"; seq: number; state: GameState }
+  | { type: "events"; seq: number; events: GameEvent[] }
   | ({ type: "event" } & GameEvent)
   | { type: "ack"; id: string; seq: number }
   | { type: "reject"; id: string; code: string; message: string }

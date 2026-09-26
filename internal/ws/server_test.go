@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -399,5 +400,61 @@ func TestShutdownClosesClientsAndRefusesNewOnes(t *testing.T) {
 	_, resp, err := h.dial("ses_1", h.token("ses_1", "usr_late", auth.RolePlayer))
 	if err == nil || resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("dial after shutdown: resp %v err %v, want 503", resp, err)
+	}
+}
+
+func TestBucket(t *testing.T) {
+	now := time.Unix(0, 0)
+	b := newBucket(20, 20, func() time.Time { return now })
+	for i := range 20 {
+		if !b.take() {
+			t.Fatalf("burst refused at command %d", i+1)
+		}
+	}
+	if b.take() {
+		t.Fatal("allowed a 21st command in the same instant")
+	}
+	now = now.Add(100 * time.Millisecond) // 2 more tokens at 20/s
+	allowed := 0
+	for range 5 {
+		if b.take() {
+			allowed++
+		}
+	}
+	if allowed != 2 {
+		t.Fatalf("refill after 100ms allowed %d, want 2", allowed)
+	}
+	now = now.Add(time.Hour)
+	for range 20 {
+		b.take()
+	}
+	if b.take() {
+		t.Fatal("tokens piled up past the burst while idle")
+	}
+}
+
+// A client flooding commands gets rate_limited rejects, not a disconnect.
+func TestFloodingIsRateLimited(t *testing.T) {
+	opts := DefaultOptions()
+	opts.CommandRate, opts.CommandBurst = 1, 5
+	h := newHarness(t, opts)
+	c, _ := h.connect("ses_1", "usr_kai", auth.RolePlayer)
+	for i := range 8 {
+		writeJSON(t, c, `{"type":"command","id":"r`+strconv.Itoa(i)+`","name":"roll_dice","args":{"text":"1d20"}}`)
+	}
+	acks, limited := 0, 0
+	for acks+limited < 8 {
+		switch m := readMsg(t, c); {
+		case m.Type == "ack":
+			acks++
+		case m.Type == "reject" && m.Code == "rate_limited":
+			limited++
+		}
+	}
+	if acks != 5 || limited != 3 {
+		t.Fatalf("acks %d, rate limited %d; want 5 and 3", acks, limited)
+	}
+	writeJSON(t, c, `{"type":"ping"}`) // still connected
+	for readMsg(t, c).Type != "pong" {
 	}
 }

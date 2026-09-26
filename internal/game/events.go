@@ -153,11 +153,42 @@ func decode[T Payload](data []byte) (Payload, error) {
 	return p, err
 }
 
-// DecodePayload decodes the stored data of an event called name.
-func DecodePayload(name string, data []byte) (Payload, error) {
+// versions holds each event's current data version; unlisted events are
+// at version 1. When an event's data changes shape, bump its version here
+// and add an upcaster from the old version, so stored sessions still
+// replay.
+var versions = map[string]int{}
+
+// upcasters[name][v] converts an event's data from version v to v+1.
+var upcasters = map[string]map[int]func(json.RawMessage) (json.RawMessage, error){}
+
+// Version returns the version new events called name are stored with.
+func Version(name string) int {
+	if v, ok := versions[name]; ok {
+		return v
+	}
+	return 1
+}
+
+// DecodePayload decodes the stored data of an event called name, stored at
+// the given version, upcasting it to the current version first.
+func DecodePayload(name string, version int, data []byte) (Payload, error) {
 	dec, ok := payloads[name]
 	if !ok {
 		return nil, fmt.Errorf("game: unknown event %q", name)
+	}
+	for v := version; v < Version(name); v++ {
+		up := upcasters[name][v]
+		if up == nil {
+			return nil, fmt.Errorf("game: no upcaster for %s from version %d", name, v)
+		}
+		var err error
+		if data, err = up(data); err != nil {
+			return nil, fmt.Errorf("game: upcast %s from version %d: %w", name, v, err)
+		}
+	}
+	if version > Version(name) {
+		return nil, fmt.Errorf("game: %s version %d is newer than this server knows", name, version)
 	}
 	p, err := dec(data)
 	if err != nil {

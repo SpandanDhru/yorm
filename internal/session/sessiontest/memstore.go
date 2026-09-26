@@ -15,13 +15,21 @@ type MemStore struct {
 	mu        sync.Mutex
 	events    map[string][]game.Event
 	members   map[string]map[game.UserID]game.Member
+	snapshots map[string][]Snapshot
 	appendErr error
 	loads     int
 }
 
+// Snapshot is a saved snapshot.
+type Snapshot struct {
+	Seq    int64
+	Format int
+	State  []byte
+}
+
 // NewMemStore returns a store holding the given empty sessions.
 func NewMemStore(sessions ...string) *MemStore {
-	s := &MemStore{events: map[string][]game.Event{}, members: map[string]map[game.UserID]game.Member{}}
+	s := &MemStore{events: map[string][]game.Event{}, members: map[string]map[game.UserID]game.Member{}, snapshots: map[string][]Snapshot{}}
 	for _, id := range sessions {
 		s.events[id] = nil
 		s.members[id] = map[game.UserID]game.Member{}
@@ -29,15 +37,53 @@ func NewMemStore(sessions ...string) *MemStore {
 	return s
 }
 
-func (s *MemStore) Load(_ context.Context, id string) ([]game.Event, error) {
+// LoadAfter returns the events after seq.
+func (s *MemStore) LoadAfter(_ context.Context, id string, after int64) ([]game.Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	evs, ok := s.events[id]
 	if !ok {
 		return nil, store.ErrNotFound
 	}
-	s.loads++
-	return append([]game.Event(nil), evs...), nil
+	var out []game.Event
+	for _, ev := range evs {
+		if ev.Seq > after {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
+}
+
+func (s *MemStore) SaveSnapshot(_ context.Context, id string, seq int64, format int, state []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshots[id] = append(s.snapshots[id], Snapshot{Seq: seq, Format: format, State: state})
+	return nil
+}
+
+func (s *MemStore) LatestSnapshot(_ context.Context, id string, format int) (int64, []byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.events[id]; ok {
+		s.loads++ // a session start looks for a snapshot exactly once
+	}
+	var best *Snapshot
+	for i, snap := range s.snapshots[id] {
+		if snap.Format == format && (best == nil || snap.Seq > best.Seq) {
+			best = &s.snapshots[id][i]
+		}
+	}
+	if best == nil {
+		return 0, nil, store.ErrNotFound
+	}
+	return best.Seq, best.State, nil
+}
+
+// Snapshots returns the snapshots saved for a session, oldest first.
+func (s *MemStore) Snapshots(id string) []Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Snapshot(nil), s.snapshots[id]...)
 }
 
 func (s *MemStore) Append(_ context.Context, id string, evs []game.Event) error {
@@ -94,7 +140,7 @@ func (s *MemStore) Len(id string) int {
 	return len(s.events[id])
 }
 
-// Loads reports how many times any session was loaded.
+// Loads reports how many times a session was started from the store.
 func (s *MemStore) Loads() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

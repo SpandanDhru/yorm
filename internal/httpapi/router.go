@@ -44,6 +44,7 @@ func NewRouter(d Deps) http.Handler {
 		r.Post("/sessions", a.createSession)
 		r.Post("/sessions/{id}/join", a.joinSession)
 		r.Post("/sessions/{id}/maps", a.uploadMap)
+		r.Get("/sessions/{id}/events", a.eventHistory)
 		r.NotFound(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusNotFound, "not found") })
 	})
 	r.Get("/uploads/{name}", a.serveUpload)

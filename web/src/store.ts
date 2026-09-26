@@ -25,7 +25,8 @@ export interface TableState {
   // Optimistic moves by command ID. A token is drawn at its pending
   // position until the server's event or reject settles the command.
   pending: Record<string, PendingMove>;
-  // Set when an event arrives out of order; the connection then resyncs.
+  // Set when an event arrives out of order; the connection then resyncs
+  // from the last event applied.
   stale: boolean;
 }
 
@@ -34,9 +35,10 @@ export const initialTable: TableState = { game: null, feed: [], pending: {}, sta
 export type Action =
   | { type: "snapshot"; state: GameState }
   | { type: "event"; event: GameEvent }
+  | { type: "events"; events: GameEvent[]; seq: number }
   | { type: "move"; id: string; move: PendingMove }
   | { type: "settle"; id: string }
-  | { type: "disconnected" };
+  | { type: "gone" };
 
 // applyEvent mirrors game.State.Apply on the server.
 export function applyEvent(s: GameState, ev: GameEvent): GameState {
@@ -268,24 +270,38 @@ export function reducer(s: TableState, a: Action): TableState {
   switch (a.type) {
     case "snapshot":
       return { ...s, game: a.state, stale: false };
-    case "event": {
-      const g = s.game;
-      if (!g || s.stale) return s; // waiting for a snapshot
-      if (a.event.seq <= g.seq) return s; // already applied
-      if (a.event.seq > g.seq + 1) return { ...s, stale: true }; // missed some
-      const line = describe(g, a.event);
-      const feed = line ? [...s.feed, { seq: a.event.seq, text: line }].slice(-MAX_FEED) : s.feed;
-      return { ...s, game: applyEvent(g, a.event), feed, pending: without(s.pending, a.event.cause) };
+    case "event":
+      if (!s.game || s.stale) return s; // waiting for the sync's answer
+      return applyInOrder(s, [a.event]);
+    case "events": {
+      // The answer to a sync: the events missed since the last one applied.
+      if (!s.game) return s;
+      const next = applyInOrder({ ...s, stale: false }, a.events);
+      return next.game!.seq < a.seq ? { ...next, stale: true } : next;
     }
     case "move":
       return { ...s, pending: { ...s.pending, [a.id]: a.move } };
     case "settle":
       return { ...s, pending: without(s.pending, a.id) };
-    case "disconnected":
-      // Unanswered moves may or may not have landed; the snapshot after
-      // reconnecting says which.
-      return { ...s, pending: {} };
+    case "gone":
+      return { ...s, pending: {} }; // nothing will answer them now
   }
+}
+
+// applyInOrder applies events that continue from the current seq, skips
+// ones already applied, and stops at a gap, marking the state stale so the
+// connection syncs again.
+function applyInOrder(s: TableState, events: GameEvent[]): TableState {
+  let { game, feed, pending } = s;
+  for (const ev of events) {
+    if (ev.seq <= game!.seq) continue;
+    if (ev.seq > game!.seq + 1) return { ...s, game, feed, pending, stale: true };
+    const line = describe(game!, ev);
+    if (line) feed = [...feed, { seq: ev.seq, text: line }].slice(-MAX_FEED);
+    game = applyEvent(game!, ev);
+    pending = without(pending, ev.cause);
+  }
+  return game === s.game ? s : { ...s, game, feed, pending };
 }
 
 // tokenPos is where to draw a token: its latest pending move, if any.

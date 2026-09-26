@@ -14,6 +14,15 @@ type eventMsg struct {
 	game.Event
 }
 
+// eventsMsg is a batch of missed events, sent in answer to a sync. One
+// message rather than one per event, so catching up can't overflow the
+// client's send buffer.
+type eventsMsg struct {
+	Type   string       `json:"type"` // "events"
+	Seq    int64        `json:"seq"`  // the session's seq; the batch ends here
+	Events []game.Event `json:"events"`
+}
+
 type snapshotMsg struct {
 	Type  string      `json:"type"` // "snapshot"
 	Seq   int64       `json:"seq"`

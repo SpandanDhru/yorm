@@ -21,6 +21,7 @@ type conn struct {
 	ws     *websocket.Conn
 	claims auth.Claims
 	send   chan []byte
+	limit  *bucket // commands; used only by the reader
 
 	ctx    context.Context // done once the connection should close
 	cancel context.CancelFunc
@@ -81,9 +82,12 @@ func (c *conn) writeLoop(timeout time.Duration) {
 			// Closing unblocks readLoop and pingLoop.
 			if c.abort {
 				_ = c.ws.CloseNow()
-			} else {
-				_ = c.ws.Close(c.code, c.reason)
+				return
 			}
+			if c.code != websocket.StatusTryAgainLater {
+				c.flush(timeout) // e.g. the welcome, or a reject explaining the close
+			}
+			_ = c.ws.Close(c.code, c.reason)
 			return
 		case msg := <-c.send:
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -92,6 +96,24 @@ func (c *conn) writeLoop(timeout time.Duration) {
 			if err != nil {
 				c.fail(websocket.StatusInternalError, "write failed")
 			}
+		}
+	}
+}
+
+// flush writes whatever is already queued. Not used for a client closed
+// for being too slow, which would only fall further behind.
+func (c *conn) flush(timeout time.Duration) {
+	for {
+		select {
+		case msg := <-c.send:
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			err := c.ws.Write(ctx, websocket.MessageText, msg)
+			cancel()
+			if err != nil {
+				return
+			}
+		default:
+			return
 		}
 	}
 }

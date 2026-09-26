@@ -87,13 +87,28 @@ type joinResp struct {
 }
 
 type msg struct {
-	Type  string          `json:"type"`
-	ID    string          `json:"id"`
-	Seq   int64           `json:"seq"`
-	Name  string          `json:"name"`
-	Code  string          `json:"code"`
-	Data  json.RawMessage `json:"data"`
-	State json.RawMessage `json:"state"`
+	Type   string          `json:"type"`
+	ID     string          `json:"id"`
+	Seq    int64           `json:"seq"`
+	Name   string          `json:"name"`
+	By     game.UserID     `json:"by"`
+	Cause  string          `json:"cause"`
+	At     time.Time       `json:"at"`
+	Code   string          `json:"code"`
+	Data   json.RawMessage `json:"data"`
+	State  json.RawMessage `json:"state"`
+	Events []msg           `json:"events"`
+}
+
+// event turns an event message back into a game.Event, as a client
+// applying it would.
+func (m msg) event(t *testing.T) game.Event {
+	t.Helper()
+	p, err := game.DecodePayload(m.Name, game.Version(m.Name), m.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return game.Event{Seq: m.Seq, Name: m.Name, By: m.By, Cause: m.Cause, At: m.At, Data: p}
 }
 
 type client struct {
@@ -316,7 +331,9 @@ func (c *client) do(name string, args any, others ...*client) []msg {
 
 func (c *client) refused(name string, args any, code string) {
 	c.t.Helper()
-	c.command("r", name, args)
+	// A fresh ID each time: the server answers a repeated ID with its
+	// first answer.
+	c.command(fmt.Sprintf("r%d", time.Now().UnixNano()), name, args)
 	if m := c.read(); m.Type != "reject" || m.Code != code {
 		c.t.Fatalf("%s: got %+v, want reject %s", name, m, code)
 	}
@@ -475,4 +492,92 @@ func TestCombat(t *testing.T) {
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("state after restart differs:\nbefore %+v\nafter  %+v", before, after)
 	}
+}
+
+// TestReconnectMidCombat drops a player's connection during a fight. On
+// reconnecting they get only what they missed, which brings them to exactly
+// the state everyone else has; and a command they resend isn't applied twice.
+func TestReconnectMidCombat(t *testing.T) {
+	st, signer, uploads := newStack(t)
+	srv := startServer(t, st, signer, uploads)
+	base := srv.http.URL + "/api/sessions"
+	dmSeat := postJSON[joinResp](t, base, `{"name":"Dropouts"}`)
+	sid := dmSeat.Session
+	kaiSeat := postJSON[joinResp](t, base+"/"+sid+"/join", `{"code":"`+dmSeat.InviteCode+`","display_name":"Kai"}`)
+
+	dm := connect(t, srv, sid, dmSeat.Token)
+	dm.snapshot()
+	kai := connect(t, srv, sid, kaiSeat.Token)
+	dm.expect("event", "MemberJoined")
+	kai.snapshot()
+
+	dm.do("set_map", map[string]any{"cols": 8, "rows": 8}, kai)
+	pc := data[game.CharacterCreated](t, kai.do("create_character", map[string]any{"name": "Kai", "max_hp": 20}, dm)[0]).Character
+	gob := data[game.CharacterCreated](t, dm.do("create_character", map[string]any{"name": "Goblin", "max_hp": 7}, kai)[0]).Character
+	for i, id := range []game.ActorID{pc.ID, gob.ID} {
+		dm.do("place_token", map[string]any{"actor": id, "at": map[string]int{"x": i, "y": 0}}, kai)
+	}
+	dm.do("start_combat", map[string]any{}, kai)
+
+	// Kai rolls, and his connection drops before... anything else.
+	kai.command("retry-1", "roll_dice", map[string]any{"text": "1d20 = 12"})
+	rolled := kai.expect("event", "DiceRolled")
+	kai.expect("ack", "")
+	dm.expect("event", "DiceRolled")
+	var kaiState game.State
+	if err := json.Unmarshal(kai.snapshotRaw(), &kaiState); err != nil {
+		t.Fatal(err)
+	}
+	_ = kai.c.CloseNow()
+
+	// The fight goes on without him.
+	dm.do("adjust_hp", map[string]any{"actor": pc.ID, "delta": -6})
+	dm.do("add_condition", map[string]any{"actor": pc.ID, "name": "Prone"})
+	dm.do("roll_dice", map[string]any{"text": "1d6+2 scimitar"})
+	dm.do("end_turn", map[string]any{})
+
+	// Back: sync from the last event he had.
+	kai = connect(t, srv, sid, kaiSeat.Token)
+	kai.write(map[string]any{"type": "sync", "last_seq": kaiState.Seq})
+	batch := kai.expect("events", "")
+	if len(batch.Events) < 5 || batch.Events[0].Seq != kaiState.Seq+1 {
+		t.Fatalf("catch-up has %d events from seq %d, want the 5+ missed after %d", len(batch.Events), batch.Events[0].Seq, kaiState.Seq)
+	}
+	for _, m := range batch.Events {
+		kaiState.Apply(m.event(t))
+	}
+	if now := dm.snapshot(); !reflect.DeepEqual(&kaiState, now) {
+		t.Fatalf("caught-up state differs:\n%+v\n%+v", &kaiState, now)
+	}
+
+	// He resends the roll he never saw answered: same answer, no new roll.
+	kai.command("retry-1", "roll_dice", map[string]any{"text": "1d20 = 12"})
+	if ack := kai.expect("ack", ""); ack.Seq != rolled.Seq {
+		t.Fatalf("retried roll acked at seq %d, want the original %d", ack.Seq, rolled.Seq)
+	}
+	if n := len(dm.snapshot().Rolls); n != 2 {
+		t.Fatalf("%d rolls in the log, want 2", n)
+	}
+
+	// The DM can read the whole history.
+	req, _ := http.NewRequest(http.MethodGet, base+"/"+sid+"/events?after=0&limit=5", nil)
+	req.Header.Set("Authorization", "Bearer "+dmSeat.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var page struct {
+		Events []msg
+		Next   *int64
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil || len(page.Events) != 5 || page.Next == nil || *page.Next != 5 {
+		t.Fatalf("history page = %d events, next %v, %v", len(page.Events), page.Next, err)
+	}
+}
+
+func (c *client) snapshotRaw() []byte {
+	c.t.Helper()
+	c.write(map[string]string{"type": "sync"})
+	return c.expect("snapshot", "").State
 }

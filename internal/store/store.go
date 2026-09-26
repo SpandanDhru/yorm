@@ -106,9 +106,20 @@ func (p *Postgres) Member(ctx context.Context, sessionID string, user game.UserI
 	return m, nil
 }
 
-// Load returns every event of the session in seq order, or ErrNotFound if
-// the session does not exist.
-func (p *Postgres) Load(ctx context.Context, sessionID string) ([]game.Event, error) {
+// LoadAfter returns the session's events with seq greater than after, in
+// order, or ErrNotFound if the session does not exist.
+func (p *Postgres) LoadAfter(ctx context.Context, sessionID string, after int64) ([]game.Event, error) {
+	return p.events(ctx, sessionID, after, 0)
+}
+
+// Events returns up to limit events with seq greater than after, for the
+// history API.
+func (p *Postgres) Events(ctx context.Context, sessionID string, after int64, limit int) ([]game.Event, error) {
+	return p.events(ctx, sessionID, after, limit)
+}
+
+// events loads events after a seq; limit 0 means all of them.
+func (p *Postgres) events(ctx context.Context, sessionID string, after int64, limit int) ([]game.Event, error) {
 	var exists bool
 	if err := p.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1)`, sessionID).Scan(&exists); err != nil {
 		return nil, fmt.Errorf("store: load: %w", err)
@@ -116,22 +127,28 @@ func (p *Postgres) Load(ctx context.Context, sessionID string) ([]game.Event, er
 	if !exists {
 		return nil, ErrNotFound
 	}
-	rows, err := p.pool.Query(ctx,
-		`SELECT seq, name, by_user, coalesce(cause, ''), data, at FROM events WHERE session_id = $1 ORDER BY seq`,
-		sessionID)
+	q := `SELECT seq, name, by_user, coalesce(cause, ''), data, version, at FROM events
+		WHERE session_id = $1 AND seq > $2 ORDER BY seq`
+	args := []any{sessionID, after}
+	if limit > 0 {
+		q += ` LIMIT $3`
+		args = append(args, limit)
+	}
+	rows, err := p.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: load: %w", err)
 	}
 	defer rows.Close()
-	var evs []game.Event
+	evs := []game.Event{}
 	for rows.Next() {
 		var ev game.Event
 		var data []byte
-		if err := rows.Scan(&ev.Seq, &ev.Name, &ev.By, &ev.Cause, &data, &ev.At); err != nil {
+		var version int16
+		if err := rows.Scan(&ev.Seq, &ev.Name, &ev.By, &ev.Cause, &data, &version, &ev.At); err != nil {
 			return nil, fmt.Errorf("store: load: %w", err)
 		}
 		ev.At = ev.At.UTC() // pgx returns local time; events are UTC everywhere else
-		if ev.Data, err = game.DecodePayload(ev.Name, data); err != nil {
+		if ev.Data, err = game.DecodePayload(ev.Name, int(version), data); err != nil {
 			return nil, fmt.Errorf("store: load seq %d: %w", ev.Seq, err)
 		}
 		evs = append(evs, ev)
@@ -140,6 +157,47 @@ func (p *Postgres) Load(ctx context.Context, sessionID string) ([]game.Event, er
 		return nil, fmt.Errorf("store: load: %w", err)
 	}
 	return evs, nil
+}
+
+// KeepSnapshots is how many snapshots a session keeps; older ones are
+// deleted when a new one is saved.
+const KeepSnapshots = 3
+
+// SaveSnapshot stores a session's state as of seq, in the given format.
+func (p *Postgres) SaveSnapshot(ctx context.Context, sessionID string, seq int64, format int, state []byte) error {
+	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO snapshots (session_id, seq, format, state) VALUES ($1, $2, $3, $4)
+			 ON CONFLICT (session_id, seq) DO NOTHING`,
+			sessionID, seq, format, state); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx,
+			`DELETE FROM snapshots WHERE session_id = $1 AND seq NOT IN (
+				SELECT seq FROM snapshots WHERE session_id = $1 ORDER BY seq DESC LIMIT $2)`,
+			sessionID, KeepSnapshots)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("store: save snapshot: %w", err)
+	}
+	return nil
+}
+
+// LatestSnapshot returns the newest snapshot in the given format, or
+// ErrNotFound if there is none.
+func (p *Postgres) LatestSnapshot(ctx context.Context, sessionID string, format int) (seq int64, state []byte, err error) {
+	err = p.pool.QueryRow(ctx,
+		`SELECT seq, state FROM snapshots WHERE session_id = $1 AND format = $2 ORDER BY seq DESC LIMIT 1`,
+		sessionID, format,
+	).Scan(&seq, &state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil, ErrNotFound
+	}
+	if err != nil {
+		return 0, nil, fmt.Errorf("store: latest snapshot: %w", err)
+	}
+	return seq, state, nil
 }
 
 // Append stores evs, which must have consecutive seqs following the
@@ -161,6 +219,7 @@ func (p *Postgres) Append(ctx context.Context, sessionID string, evs []game.Even
 func appendTx(ctx context.Context, tx pgx.Tx, sessionID string, evs []game.Event) error {
 	n := len(evs)
 	seqs, names, bys, causes, datas, ats := make([]int64, n), make([]string, n), make([]string, n), make([]*string, n), make([]string, n), make([]time.Time, n)
+	versions := make([]int16, n)
 	for i, ev := range evs {
 		if ev.Seq != evs[0].Seq+int64(i) {
 			return fmt.Errorf("seqs not consecutive at %d", ev.Seq)
@@ -170,6 +229,7 @@ func appendTx(ctx context.Context, tx pgx.Tx, sessionID string, evs []game.Event
 			return err
 		}
 		seqs[i], names[i], bys[i], datas[i], ats[i] = ev.Seq, ev.Name, string(ev.By), string(data), ev.At
+		versions[i] = int16(game.Version(ev.Name)) //nolint:gosec // versions are small
 		if ev.Cause != "" {
 			causes[i] = &evs[i].Cause
 		}
@@ -187,11 +247,11 @@ func appendTx(ctx context.Context, tx pgx.Tx, sessionID string, evs []game.Event
 		return ErrConflict
 	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO events (session_id, seq, name, by_user, cause, data, at)
-		SELECT $1, seq, name, by_user, cause, data::jsonb, at
-		FROM unnest($2::bigint[], $3::text[], $4::text[], $5::text[], $6::text[], $7::timestamptz[])
-			AS e(seq, name, by_user, cause, data, at)`,
-		sessionID, seqs, names, bys, causes, datas, ats)
+		INSERT INTO events (session_id, seq, name, by_user, cause, data, version, at)
+		SELECT $1, seq, name, by_user, cause, data::jsonb, version, at
+		FROM unnest($2::bigint[], $3::text[], $4::text[], $5::text[], $6::text[], $7::smallint[], $8::timestamptz[])
+			AS e(seq, name, by_user, cause, data, version, at)`,
+		sessionID, seqs, names, bys, causes, datas, versions, ats)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation on (session_id, seq)
 		return ErrConflict

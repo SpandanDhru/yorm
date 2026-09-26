@@ -52,6 +52,18 @@ func (f *fakeStore) Session(_ context.Context, id string) (store.Session, error)
 	return s, nil
 }
 
+// Events serves seqs 1..20 of a fixed session "ses_1".
+func (f *fakeStore) Events(_ context.Context, id string, after int64, limit int) ([]game.Event, error) {
+	if id != "ses_1" {
+		return nil, store.ErrNotFound
+	}
+	evs := []game.Event{}
+	for seq := after + 1; seq <= 20 && len(evs) < limit; seq++ {
+		evs = append(evs, game.Event{Seq: seq, Name: "DiceRolled", By: "usr_dm", Data: game.DiceRolled{Expr: "1d20"}})
+	}
+	return evs, nil
+}
+
 func (f *fakeStore) AddMember(_ context.Context, id string, m game.Member) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -343,5 +355,51 @@ func TestStaticRoutes(t *testing.T) {
 		if rec.Code != tt.code || (tt.body != "" && strings.TrimSpace(rec.Body.String()) != tt.body) {
 			t.Errorf("GET %s = %d %q, want %d %q", tt.path, rec.Code, rec.Body, tt.code, tt.body)
 		}
+	}
+}
+
+func TestEventHistory(t *testing.T) {
+	a := newAPI(t, nil)
+	get := func(path, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		return a.do(req)
+	}
+	type page struct {
+		Events []struct{ Seq int64 }
+		Next   *int64
+	}
+	dmTok := a.token("ses_1", "usr_dm", auth.RoleDM)
+
+	rec := get("/api/sessions/ses_1/events?after=5&limit=10", dmTok)
+	p := decode[page](t, rec)
+	if rec.Code != http.StatusOK || len(p.Events) != 10 || p.Events[0].Seq != 6 || p.Next == nil || *p.Next != 15 {
+		t.Fatalf("page 1 = %d %+v", rec.Code, p)
+	}
+	p = decode[page](t, get("/api/sessions/ses_1/events?after=15&limit=10", dmTok))
+	if len(p.Events) != 5 || p.Next != nil {
+		t.Fatalf("last page = %+v", p)
+	}
+	if p := decode[page](t, get("/api/sessions/ses_1/events", dmTok)); len(p.Events) != 20 {
+		t.Fatalf("default page has %d events", len(p.Events))
+	}
+
+	for name, tt := range map[string]struct {
+		path, token string
+		code        int
+	}{
+		"no token":      {"/api/sessions/ses_1/events", "", http.StatusUnauthorized},
+		"player":        {"/api/sessions/ses_1/events", a.token("ses_1", "usr_kai", auth.RolePlayer), http.StatusForbidden},
+		"bad after":     {"/api/sessions/ses_1/events?after=x", dmTok, http.StatusBadRequest},
+		"limit too big": {"/api/sessions/ses_1/events?limit=5000", dmTok, http.StatusBadRequest},
+		"missing":       {"/api/sessions/ses_2/events", a.token("ses_2", "usr_dm", auth.RoleDM), http.StatusNotFound},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if rec := get(tt.path, tt.token); rec.Code != tt.code {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.code)
+			}
+		})
 	}
 }

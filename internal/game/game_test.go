@@ -269,7 +269,7 @@ func TestPayloadRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := DecodePayload(p.EventName(), b)
+		got, err := DecodePayload(p.EventName(), Version(p.EventName()), b)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -277,7 +277,7 @@ func TestPayloadRoundTrip(t *testing.T) {
 			t.Errorf("%s: got %+v, want %+v", p.EventName(), got, p)
 		}
 	}
-	if _, err := DecodePayload("Nope", []byte(`{}`)); err == nil {
+	if _, err := DecodePayload("Nope", 1, []byte(`{}`)); err == nil {
 		t.Error("unknown event decoded without error")
 	}
 }
@@ -300,7 +300,7 @@ func TestReplayMatchesLiveState(t *testing.T) {
 		for _, p := range ps {
 			ev := Event{Seq: live.Seq + 1, Name: p.EventName(), By: c.By, At: time.Unix(0, 0)}
 			b, _ := json.Marshal(p)
-			ev.Data, _ = DecodePayload(ev.Name, b)
+			ev.Data, _ = DecodePayload(ev.Name, 1, b)
 			live.Apply(ev)
 			log = append(log, ev)
 		}
@@ -551,5 +551,37 @@ func TestPathCostUsesCellFeet(t *testing.T) {
 	m.CellFeet = 10
 	if feet, _ := PathCost(m, DiagonalFive, 1, Cell{0, 0}, Cell{3, 0}, -1); feet != 30 {
 		t.Fatalf("feet = %d, want 30", feet)
+	}
+}
+
+// An event whose data changed shape still replays from its old form.
+func TestUpcasting(t *testing.T) {
+	// Pretend TokenMoved v1 stored the target as "dest" and v2 renamed it.
+	versions["TokenMoved"] = 2
+	upcasters["TokenMoved"] = map[int]func(json.RawMessage) (json.RawMessage, error){
+		1: func(d json.RawMessage) (json.RawMessage, error) {
+			var old map[string]json.RawMessage
+			if err := json.Unmarshal(d, &old); err != nil {
+				return nil, err
+			}
+			old["to"] = old["dest"]
+			delete(old, "dest")
+			return json.Marshal(old)
+		},
+	}
+	t.Cleanup(func() { delete(versions, "TokenMoved"); delete(upcasters, "TokenMoved") })
+
+	got, err := DecodePayload("TokenMoved", 1, []byte(`{"token":"t","from":{"x":0,"y":0},"dest":{"x":3,"y":4}}`))
+	if err != nil || got != (TokenMoved{Token: "t", To: Cell{3, 4}}) {
+		t.Fatalf("upcast = %+v, %v", got, err)
+	}
+	if got, _ := DecodePayload("TokenMoved", 2, []byte(`{"token":"t","to":{"x":1,"y":1}}`)); got != (TokenMoved{Token: "t", To: Cell{1, 1}}) {
+		t.Fatalf("current version = %+v", got)
+	}
+	if _, err := DecodePayload("TokenMoved", 3, []byte(`{}`)); err == nil {
+		t.Fatal("decoded a version from the future")
+	}
+	if _, err := DecodePayload("MapSet", 0, []byte(`{}`)); err == nil {
+		t.Fatal("decoded a version with no upcaster")
 	}
 }
