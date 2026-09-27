@@ -10,7 +10,7 @@ const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 5;
 
 export type PaintKind = TerrainKind | "clear" | "reveal" | "cover";
-type Mode = "select" | "brush" | "rect";
+type Mode = "select" | "brush" | "rect" | "pen" | "eraser";
 
 export interface Paint {
   terrain: PaintKind;
@@ -29,7 +29,18 @@ interface Props {
   // onMove returns false if the move could not be sent.
   onMove(id: TokenID, to: Cell): boolean;
   onPaint(p: Paint): void;
+  onDraw(points: number[], color: string, width: number): void; // a pen stroke, in cells
+  onErase(id: string): void;
+  onClearDrawings(): void;
 }
+
+// The pen's colors, and widths in cells.
+const PEN_COLORS = ["#e63946", "#1d1d1d", "#ffffff", "#2f6fd1", "#2e9e5b", "#d9a441"];
+const PEN_WIDTHS = [
+  { label: "Thin", width: 0.06 },
+  { label: "Medium", width: 0.12 },
+  { label: "Thick", width: 0.25 },
+];
 
 export const TERRAIN: Record<PaintKind, { label: string; fill: string; hatch?: boolean }> = {
   wall: { label: "Wall", fill: "rgba(38,38,44,0.93)" },
@@ -46,7 +57,7 @@ const HP_COLORS = { healthy: "#4caf7a", bloodied: "#e0a030", down: "#555555" };
 const TERRAIN_KINDS: PaintKind[] = ["wall", "difficult", "water", "hazard", "clear"];
 const FOG_KINDS: PaintKind[] = ["reveal", "cover"];
 
-export function MapCanvas({ table, me, isDM, dmView, selected, onSelect, onMove, onPaint }: Props) {
+export function MapCanvas({ table, me, isDM, dmView, selected, onSelect, onMove, onPaint, onDraw, onErase, onClearDrawings }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const size = useSize(wrap);
   const map = table.game?.map ?? null;
@@ -55,7 +66,29 @@ export function MapCanvas({ table, me, isDM, dmView, selected, onSelect, onMove,
   const [mode, setMode] = useState<Mode>("select");
   const [brush, setBrush] = useState<PaintKind>("wall");
   const [fogFor, setFogFor] = useState<UserID | undefined>(undefined); // fog tools: the party, or one player
+  const [penColor, setPenColor] = useState(PEN_COLORS[0]!);
+  const [penWidth, setPenWidth] = useState(PEN_WIDTHS[1]!.width);
   const painting = isDM && mode !== "select";
+  const images = useImages(Object.values(table.game?.tokens ?? {}).map((t) => t.image));
+
+  // Konva works out what's under the pointer from a hit map it redraws only
+  // when shapes change, not when their listening flags do. Switching tools
+  // changes which layers and strokes listen, so redraw it then.
+  const stageRef = useRef<Konva.Stage>(null);
+  const drawingsKey = map?.drawings?.map((d) => d.id).join() ?? "";
+  useEffect(() => {
+    stageRef.current?.getLayers().forEach((l) => l.drawHit());
+  }, [mode, drawingsKey]);
+
+  // A pen stroke in progress, in cells.
+  const pen = useRef<number[] | null>(null);
+  const [penPreview, setPenPreview] = useState<number[]>([]);
+
+  function penPoint(e: Konva.KonvaEventObject<PointerEvent>): [number, number] | null {
+    const p = e.target.getStage()?.getRelativePointerPosition();
+    if (!p || !map) return null;
+    return [clamp(p.x / CELL, 0, map.cols), clamp(p.y / CELL, 0, map.rows)];
+  }
 
   // Fit the whole map in view when it first appears or its grid changes.
   const hasSize = size.w > 0;
@@ -137,6 +170,17 @@ export function MapCanvas({ table, me, isDM, dmView, selected, onSelect, onMove,
     s.last = c;
   }
 
+  function penOrStrokeEnd() {
+    const pts = pen.current;
+    if (pts) {
+      pen.current = null;
+      setPenPreview([]);
+      onDraw(pts, penColor, penWidth);
+      return;
+    }
+    strokeEnd();
+  }
+
   function strokeEnd() {
     const s = stroke.current;
     if (!s) return;
@@ -162,10 +206,21 @@ export function MapCanvas({ table, me, isDM, dmView, selected, onSelect, onMove,
           fogFor={fogFor}
           setFogFor={setFogFor}
           players={Object.values(table.game!.members).filter((m) => m.role === "player")}
+          penColor={penColor}
+          setPenColor={setPenColor}
+          penWidth={penWidth}
+          setPenWidth={setPenWidth}
+          drawings={map.drawings?.length ?? 0}
+          onUndo={() => {
+            const last = map.drawings?.at(-1);
+            if (last) onErase(last.id);
+          }}
+          onClear={onClearDrawings}
         />
       )}
       {map && hasSize && (
         <Stage
+          ref={stageRef}
           width={size.w}
           height={size.h}
           x={view.x}
@@ -179,12 +234,26 @@ export function MapCanvas({ table, me, isDM, dmView, selected, onSelect, onMove,
             if (e.target === e.target.getStage()) setView((v) => ({ ...v, x: e.target.x(), y: e.target.y() }));
           }}
           onPointerDown={(e) => {
-            if (painting) strokeStart(e);
-            else if (e.target === e.target.getStage() || e.target.name() === "background") onSelect(null);
+            if (mode === "pen" && isDM) {
+              const pt = penPoint(e);
+              if (pt) {
+                pen.current = [...pt];
+                setPenPreview([...pt]);
+              }
+            } else if (mode === "brush" || mode === "rect") strokeStart(e);
+            else if (!painting && (e.target === e.target.getStage() || e.target.name() === "background")) onSelect(null);
           }}
-          onPointerMove={strokeMove}
-          onPointerUp={strokeEnd}
-          onPointerLeave={strokeEnd}
+          onPointerMove={(e) => {
+            if (pen.current) {
+              const pt = penPoint(e);
+              if (pt) {
+                pen.current.push(...pt);
+                setPenPreview([...pen.current]);
+              }
+            } else strokeMove(e);
+          }}
+          onPointerUp={penOrStrokeEnd}
+          onPointerLeave={penOrStrokeEnd}
         >
           <Layer listening={!painting}>
             <Rect name="background" width={map.cols * CELL} height={map.rows * CELL} fill={map.background || "#2b2f36"} />
@@ -193,6 +262,36 @@ export function MapCanvas({ table, me, isDM, dmView, selected, onSelect, onMove,
           <Layer listening={false}>
             <Shape sceneFunc={(ctx) => drawCells(ctx, Object.entries(map.terrain).map(([k, kind]) => [parseKey(k), kind]))} />
             <Grid cols={map.cols} rows={map.rows} />
+          </Layer>
+          <Layer>
+            {(map.drawings ?? []).map((d) => (
+              <Line
+                key={d.id}
+                listening={mode === "eraser"}
+                points={d.points.map((v) => v * CELL)}
+                stroke={d.color}
+                strokeWidth={d.width * CELL}
+                lineCap="round"
+                lineJoin="round"
+                tension={0.3}
+                hitStrokeWidth={Math.max(d.width * CELL, 18)}
+                onClick={() => onErase(d.id)}
+                onTap={() => onErase(d.id)}
+                onMouseEnter={(e) => mode === "eraser" && e.target.opacity(0.4)}
+                onMouseLeave={(e) => e.target.opacity(1)}
+              />
+            ))}
+            {penPreview.length > 0 && (
+              <Line
+                points={penPreview.map((v) => v * CELL)}
+                stroke={penColor}
+                strokeWidth={penWidth * CELL}
+                lineCap="round"
+                lineJoin="round"
+                tension={0.3}
+                listening={false}
+              />
+            )}
           </Layer>
           {map.fog.enabled && (
             <Layer listening={false}>
@@ -237,14 +336,21 @@ export function MapCanvas({ table, me, isDM, dmView, selected, onSelect, onMove,
                     y={px / 2}
                     radius={px / 2 - 4}
                     fill={t.color}
-                    stroke={selected === t.id ? "#ffffff" : mine ? "#ffd166" : "#111111"}
-                    strokeWidth={selected === t.id ? 4 : 2}
-                    dash={t.hidden ? [6, 4] : undefined}
                     shadowColor="black"
                     shadowBlur={6}
                     shadowOpacity={0.5}
                   />
+                  {t.image && images.get(t.image) && <Portrait image={images.get(t.image)!} size={px} />}
+                  <Circle
+                    x={px / 2}
+                    y={px / 2}
+                    radius={px / 2 - 4}
+                    stroke={selected === t.id ? "#ffffff" : mine ? "#ffd166" : "#111111"}
+                    strokeWidth={selected === t.id ? 4 : 2}
+                    dash={t.hidden ? [6, 4] : undefined}
+                  />
                   <Text
+                    visible={!(t.image && images.get(t.image))}
                     text={initials(label)}
                     width={px}
                     height={px}
@@ -314,13 +420,23 @@ function Toolbar(props: {
   fogFor: UserID | undefined;
   setFogFor(u: UserID | undefined): void;
   players: Member[];
+  penColor: string;
+  setPenColor(c: string): void;
+  penWidth: number;
+  setPenWidth(w: number): void;
+  drawings: number;
+  onUndo(): void;
+  onClear(): void;
 }) {
   const kinds = props.fog ? [...TERRAIN_KINDS, ...FOG_KINDS] : TERRAIN_KINDS;
   const modes: { mode: Mode; label: string; title: string }[] = [
     { mode: "select", label: "Move", title: "Move tokens and pan the map" },
     { mode: "brush", label: "Brush", title: "Paint cells one by one" },
     { mode: "rect", label: "Rectangle", title: "Paint a rectangle" },
+    { mode: "pen", label: "Pen", title: "Draw freely on the map" },
+    { mode: "eraser", label: "Eraser", title: "Click a drawing to erase it" },
   ];
+  const cellTools = props.mode === "brush" || props.mode === "rect";
   return (
     <div className="toolbar" role="toolbar" aria-label="Map tools">
       {modes.map((m) => (
@@ -328,7 +444,30 @@ function Toolbar(props: {
           {m.label}
         </button>
       ))}
-      {props.mode !== "select" && (
+      {(props.mode === "pen" || props.mode === "eraser") && (
+        <>
+          <span className="toolbar-sep" />
+          {props.mode === "pen" &&
+            PEN_COLORS.map((c) => (
+              <button key={c} aria-pressed={props.penColor === c} aria-label={`Pen color ${c}`} onClick={() => props.setPenColor(c)}>
+                <span className="swatch" style={{ background: c }} />
+              </button>
+            ))}
+          {props.mode === "pen" &&
+            PEN_WIDTHS.map((w) => (
+              <button key={w.label} aria-pressed={props.penWidth === w.width} onClick={() => props.setPenWidth(w.width)}>
+                {w.label}
+              </button>
+            ))}
+          <button disabled={props.drawings === 0} onClick={props.onUndo} title="Erase the last stroke">
+            Undo
+          </button>
+          <button disabled={props.drawings === 0} onClick={props.onClear} title="Erase every drawing">
+            Clear
+          </button>
+        </>
+      )}
+      {cellTools && (
         <>
           <span className="toolbar-sep" />
           {kinds.map((k) => (
@@ -366,6 +505,49 @@ function drawFog(ctx: Konva.Context, map: MapInfo, revealed: (c: Cell) => boolea
       if (!revealed({ x, y })) ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
     }
   }
+}
+
+// Portrait draws a token's picture inside its circle, cropped to fill it.
+function Portrait({ image, size }: { image: HTMLImageElement; size: number }) {
+  const r = size / 2 - 4;
+  const side = Math.min(image.naturalWidth, image.naturalHeight);
+  return (
+    <Group
+      listening={false}
+      clipFunc={(ctx) => {
+        ctx.arc(size / 2, size / 2, r, 0, Math.PI * 2, false);
+      }}
+    >
+      <KImage
+        image={image}
+        x={size / 2 - r}
+        y={size / 2 - r}
+        width={r * 2}
+        height={r * 2}
+        crop={{ x: (image.naturalWidth - side) / 2, y: (image.naturalHeight - side) / 2, width: side, height: side }}
+      />
+    </Group>
+  );
+}
+
+// useImages loads each distinct URL once and returns those that have loaded.
+function useImages(urls: (string | undefined)[]): Map<string, HTMLImageElement> {
+  const [loaded, setLoaded] = useState(() => new Map<string, HTMLImageElement>());
+  const key = [...new Set(urls.filter((u): u is string => !!u))].sort().join("\n");
+  useEffect(() => {
+    const wanted = key ? key.split("\n") : [];
+    const pending: HTMLImageElement[] = [];
+    for (const url of wanted) {
+      if (loaded.has(url)) continue;
+      const img = new window.Image();
+      img.onload = () => setLoaded((m) => new Map(m).set(url, img));
+      img.src = url;
+      pending.push(img);
+    }
+    return () => pending.forEach((img) => (img.onload = null));
+    // loaded is read to skip what's done, not a reason to reload.
+  }, [key]);
+  return loaded;
 }
 
 function drawCells(ctx: Konva.Context, cells: [Cell, PaintKind][]) {

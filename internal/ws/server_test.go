@@ -31,6 +31,7 @@ type harness struct {
 	t      *testing.T
 	srv    *Server
 	store  *sessiontest.MemStore
+	mgr    *session.Manager
 	http   *httptest.Server
 	signer *auth.Signer
 }
@@ -61,7 +62,7 @@ func newHarness(t *testing.T, opts Options) *harness {
 		}
 		hs.Close()
 	})
-	return &harness{t: t, srv: srv, store: st, http: hs, signer: signer}
+	return &harness{t: t, srv: srv, store: st, mgr: mgr, http: hs, signer: signer}
 }
 
 func (h *harness) token(session, user string, role auth.Role) string {
@@ -460,5 +461,18 @@ func TestFloodingIsRateLimited(t *testing.T) {
 	}
 	writeJSON(t, c, `{"type":"ping"}`) // still connected
 	for readMsg(t, c).Type != "pong" {
+	}
+}
+
+// A deleted session closes its clients with 4404, so they stop reconnecting.
+func TestDeletedSessionClosesWith4404(t *testing.T) {
+	h := newHarness(t, DefaultOptions())
+	c, _ := h.connect("ses_1", "usr_dm", auth.RoleDM)
+	writeJSON(t, c, `{"type":"sync"}`)
+	readMsg(t, c)
+	h.mgr.Delete(context.Background(), "ses_1")
+	_, _, err := c.Read(testCtx(t))
+	if got := websocket.CloseStatus(err); got != StatusSessionNotFound {
+		t.Fatalf("close status = %v (err %v), want 4404", got, err)
 	}
 }

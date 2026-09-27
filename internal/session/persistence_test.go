@@ -305,3 +305,21 @@ func TestAnswersForgetTheOldest(t *testing.T) {
 		t.Fatalf("list = %+v", got)
 	}
 }
+
+func TestDeleteDisconnectsForGood(t *testing.T) {
+	st := sessiontest.NewMemStore("ses_1")
+	m := newManager(t, st, DefaultOptions())
+	dm := join(t, m, "ses_1", "usr_dm", auth.RoleDM)
+	dm.snapshot()
+	m.Delete(context.Background(), "ses_1")
+	select {
+	case reason := <-dm.closed:
+		if reason != ReasonDeleted {
+			t.Fatalf("closed with %q", reason)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("client not disconnected")
+	}
+	waitFor(t, "the actor to stop", func() bool { return m.Active() == 0 })
+	m.Delete(context.Background(), "ses_1") // deleting again is harmless
+}

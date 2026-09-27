@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { inviteLink, uploadMap, type Seat } from "../api";
-import { freeCell, tokenFor } from "../store";
+import { deleteSession, forgetSeat, inviteLink, uploadImage, uploadMap, type Seat } from "../api";
+import { navigate } from "../nav";
+import { canControl, freeCell, tokenFor } from "../store";
 import type { GameState, MapInfo, Token, TokenID } from "../types";
 import { CharactersPanel } from "./Characters";
 import { NumberInput } from "./NumberInput";
@@ -36,6 +37,7 @@ export function Sidebar({ seat, game, feed, selected, command }: Props) {
             Cell {token.pos.x + 1}, {token.pos.y + 1} · moved by{" "}
             {token.controllers.map((u) => game.members[u]?.display_name ?? u).join(", ") || "the DM"}
           </p>
+          {canControl(game, seat.user, token) && <PictureButtons seat={seat} token={token} command={command} />}
           {isDM && (
             <div className="row">
               <HideButton token={token} command={command} />
@@ -66,6 +68,7 @@ export function Sidebar({ seat, game, feed, selected, command }: Props) {
       {tab === "characters" && (
         <>
           <CharactersPanel seat={seat} game={game} command={command} focus={token?.actor ?? null} />
+          {token?.actor && canControl(game, seat.user, token) && <PictureButtons seat={seat} token={token} command={command} />}
           {token?.actor && isDM && (
             <div className="row">
               <HideButton token={token} command={command} />
@@ -93,9 +96,80 @@ export function Sidebar({ seat, game, feed, selected, command }: Props) {
         <>
           {game.map && <AddToken game={game} command={command} />}
           <MapPanel seat={seat} game={game} command={command} />
+          <DeleteSession seat={seat} />
         </>
       )}
     </aside>
+  );
+}
+
+// PictureButtons lets whoever controls a token give it a picture.
+function PictureButtons({ seat, token, command }: { seat: Seat; token: Token; command: Props["command"] }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function pick(file: File | undefined) {
+    if (!file) return;
+    setBusy(true);
+    setError("");
+    try {
+      const { image_url } = await uploadImage(seat, file);
+      command("set_token_image", { token: token.id, image: image_url });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="stack">
+      <div className="row">
+        <label className="button secondary">
+          {busy ? "Uploading…" : token.image ? "Change picture" : "Add picture"}
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            hidden
+            disabled={busy}
+            onChange={(e) => {
+              void pick(e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+        </label>
+        {token.image && (
+          <button className="secondary" onClick={() => command("set_token_image", { token: token.id, image: "" })}>
+            Remove picture
+          </button>
+        )}
+      </div>
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
+function DeleteSession({ seat }: { seat: Seat }) {
+  const [error, setError] = useState("");
+  return (
+    <section className="stack danger-zone">
+      <h3>Session</h3>
+      <p className="muted">Deleting removes the map, characters, history, and uploaded pictures for everyone. It can't be undone.</p>
+      <button
+        className="danger"
+        onClick={async () => {
+          if (!confirm(`Delete "${seat.name}" for everyone? This can't be undone.`)) return;
+          try {
+            await deleteSession(seat);
+            forgetSeat(seat.session);
+            navigate("/");
+          } catch (err) {
+            setError((err as Error).message);
+          }
+        }}
+      >
+        Delete session
+      </button>
+      {error && <p className="error">{error}</p>}
+    </section>
   );
 }
 

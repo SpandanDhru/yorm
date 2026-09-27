@@ -77,6 +77,10 @@ var deciders = map[string]decider{
 	"roll_dice": decideRollDice,
 
 	"set_token_hidden": decideSetTokenHidden,
+	"set_token_image":  decideSetTokenImage,
+	"draw":             decideDraw,
+	"erase_drawing":    decideEraseDrawing,
+	"clear_drawings":   decideClearDrawings,
 	"set_fog":          decideSetFog,
 	"reveal_fog":       decidePaintFog(true),
 	"hide_fog":         decidePaintFog(false),
@@ -111,9 +115,27 @@ const (
 	maxLabelLen  = 32
 )
 
-// UploadsPrefix is where map images are served. set_map only accepts images
-// from here, so a DM cannot point players' browsers at another site.
+// UploadsPrefix is where uploaded images are served. Maps and token images
+// must come from here, so no one can point other players' browsers at
+// another site.
 const UploadsPrefix = "/uploads/"
+
+// uploaded reports whether url is an image uploaded to this session:
+// /uploads/<this session>/<name>, or /uploads/<name> from before uploads
+// were kept per session.
+func (s *State) uploaded(url string) bool {
+	rest, ok := strings.CutPrefix(url, UploadsPrefix)
+	if !ok {
+		return false
+	}
+	if dir, name, nested := strings.Cut(rest, "/"); nested {
+		if dir != s.ID {
+			return false
+		}
+		rest = name
+	}
+	return rest != "" && !strings.ContainsAny(rest, "/\\") && !strings.HasPrefix(rest, ".")
+}
 
 type setMapArgs struct {
 	ImageURL   string `json:"image_url"`  // empty for a blank map
@@ -136,11 +158,8 @@ func decideSetMap(s *State, cmd Command, env Env) ([]Payload, error) {
 	if err := decodeArgs(cmd, &a); err != nil {
 		return nil, err
 	}
-	if a.ImageURL != "" {
-		name, ok := strings.CutPrefix(a.ImageURL, UploadsPrefix)
-		if !ok || name == "" || strings.ContainsAny(name, "/\\") {
-			return nil, reject(CodeInvalidTarget, "image_url must be an uploaded image")
-		}
+	if a.ImageURL != "" && !s.uploaded(a.ImageURL) {
+		return nil, reject(CodeInvalidTarget, "image_url must be an uploaded image")
 	}
 	if a.Background == "" {
 		a.Background = defaultBackground
@@ -172,6 +191,7 @@ func decideSetMap(s *State, cmd Command, env Env) ([]Payload, error) {
 			}
 		}
 		m.regridFog(s.Map)
+		m.Drawings = slices.Clone(s.Map.Drawings)
 	}
 	return []Payload{MapSet{Map: m}}, nil
 }
@@ -239,6 +259,7 @@ type placeTokenArgs struct {
 	Size        int      `json:"size"`
 	Controllers []UserID `json:"controllers"`
 	Hidden      bool     `json:"hidden"`
+	Image       string   `json:"image"` // optional, an uploaded image
 }
 
 var colorRE = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
@@ -293,6 +314,9 @@ func decidePlaceToken(s *State, cmd Command, env Env) ([]Payload, error) {
 	if s.Map == nil {
 		return nil, reject(CodeInvalidTarget, "upload a map first")
 	}
+	if a.Image != "" && !s.uploaded(a.Image) {
+		return nil, reject(CodeInvalidTarget, "image must be an uploaded image")
+	}
 	if !s.Map.InBounds(a.At, a.Size) {
 		return nil, reject(CodeInvalidTarget, "token does not fit there")
 	}
@@ -307,7 +331,7 @@ func decidePlaceToken(s *State, cmd Command, env Env) ([]Payload, error) {
 	}
 	t := Token{
 		ID: TokenID(env.NewID("tok")), Actor: a.Actor, Label: a.Label, Color: a.Color,
-		Pos: a.At, Size: a.Size, Controllers: controllers, Hidden: a.Hidden,
+		Pos: a.At, Size: a.Size, Controllers: controllers, Hidden: a.Hidden, Image: a.Image,
 	}
 	return []Payload{TokenPlaced{Token: t}}, nil
 }

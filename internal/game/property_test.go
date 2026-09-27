@@ -314,7 +314,16 @@ func randomCommand(r *rand.Rand, s *State) Command {
 			return c("end_turn", `{}`)
 		}
 	}
-	switch r.IntN(30) {
+	switch r.IntN(34) {
+	case 30:
+		return c("set_token_image", fmt.Sprintf(`{"token":%q,"image":%q}`, token(), pick("/uploads/ses/img_a.png", "", "/uploads/other/img_a.png")))
+	case 31, 32:
+		return c("draw", fmt.Sprintf(`{"color":"#ff0000","width":0.1,"points":[%d,%d,%d.5,%d.25]}`, r.IntN(6), r.IntN(6), r.IntN(6), r.IntN(6)))
+	case 33:
+		if s.Map != nil && len(s.Map.Drawings) > 0 && r.IntN(2) == 0 {
+			return c("erase_drawing", fmt.Sprintf(`{"id":%q}`, s.Map.Drawings[r.IntN(len(s.Map.Drawings))].ID))
+		}
+		return c("clear_drawings", `{}`)
 	case 24:
 		return c("set_token_hidden", fmt.Sprintf(`{"token":%q,"hidden":%v}`, token(), r.IntN(2) == 0))
 	case 25:

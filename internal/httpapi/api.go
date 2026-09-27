@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -28,12 +28,15 @@ type Store interface {
 	CreateSession(ctx context.Context, s store.Session, dm game.Member) error
 	Session(ctx context.Context, id string) (store.Session, error)
 	AddMember(ctx context.Context, sessionID string, m game.Member) error
+	DeleteSession(ctx context.Context, id string) error
 	Events(ctx context.Context, sessionID string, after int64, limit int) ([]game.Event, error)
 }
 
-// Commander runs a command in a live session; *session.Manager implements it.
+// Commander runs a command in a live session, or stops a deleted one;
+// *session.Manager implements it.
 type Commander interface {
 	Do(ctx context.Context, sessionID string, cmd game.Command) (int64, error)
+	Delete(ctx context.Context, sessionID string)
 }
 
 type api struct {
@@ -154,15 +157,8 @@ func (a *api) uploadMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxImageBytes+(1<<20))
-	file, _, err := r.FormFile("image")
-	if err != nil {
-		var tooBig *http.MaxBytesError
-		if errors.As(err, &tooBig) {
-			writeError(w, http.StatusRequestEntityTooLarge, "image must be at most 20 MB")
-			return
-		}
-		writeError(w, http.StatusBadRequest, "image file is required")
+	file, ok := imageFile(w, r)
+	if !ok {
 		return
 	}
 	defer func() { _ = file.Close() }()
@@ -178,14 +174,8 @@ func (a *api) uploadMap(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	name, err := a.saveImage(file)
-	if err != nil {
-		var bad badImageError
-		if errors.As(err, &bad) {
-			writeError(w, http.StatusBadRequest, bad.Error())
-			return
-		}
-		a.internalError(w, "save image", err)
+	name, ok := a.save(w, sessionID, "map", file)
+	if !ok {
 		return
 	}
 	args, _ := json.Marshal(map[string]any{
@@ -195,7 +185,7 @@ func (a *api) uploadMap(w http.ResponseWriter, r *http.Request) {
 		ID: ids.New("cmd"), By: game.UserID(claims.User), Name: "set_map", Args: args,
 	})
 	if err != nil {
-		_ = os.Remove(filepath.Join(a.UploadDir, name))
+		a.removeUpload(name)
 		var rej *game.Reject
 		if errors.As(err, &rej) {
 			writeJSON(w, http.StatusUnprocessableEntity, rej)
@@ -211,9 +201,120 @@ type badImageError string
 
 func (e badImageError) Error() string { return string(e) }
 
+// uploads runs f on the uploads dir as an os.Root, which keeps every path
+// inside it.
+func (a *api) uploads(f func(*os.Root) error) error {
+	root, err := os.OpenRoot(a.UploadDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	return f(root)
+}
+
+// removeUpload deletes one uploaded file, by its path under the uploads dir.
+func (a *api) removeUpload(name string) {
+	if err := a.uploads(func(root *os.Root) error { return root.Remove(name) }); err != nil {
+		a.Log.Warn("removing an unused upload", "name", name, "err", err)
+	}
+}
+
+// imageFile returns the "image" file of a multipart upload, or writes the
+// error and returns false.
+func imageFile(w http.ResponseWriter, r *http.Request) (multipart.File, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxImageBytes+(1<<20))
+	file, _, err := r.FormFile("image")
+	if err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeError(w, http.StatusRequestEntityTooLarge, "image must be at most 20 MB")
+			return nil, false
+		}
+		writeError(w, http.StatusBadRequest, "image file is required")
+		return nil, false
+	}
+	return file, true
+}
+
+// save stores an uploaded image in the session's folder and returns its
+// path under the uploads dir, or writes the error and returns false.
+func (a *api) save(w http.ResponseWriter, sessionID, prefix string, file io.Reader) (string, bool) {
+	name, err := a.saveImage(sessionID, prefix, file)
+	var bad badImageError
+	switch {
+	case errors.As(err, &bad):
+		writeError(w, http.StatusBadRequest, bad.Error())
+		return "", false
+	case err != nil:
+		a.internalError(w, "save image", err)
+		return "", false
+	}
+	return name, true
+}
+
+// uploadImage stores a picture, for a token, and returns its URL. Any
+// member may upload; setting it on a token is a command, checked there.
+func (a *api) uploadImage(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "id")
+	if _, ok := a.bearer(w, r, sessionID); !ok {
+		return
+	}
+	if _, err := a.Store.Session(r.Context(), sessionID); errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "no such session")
+		return
+	} else if err != nil {
+		a.internalError(w, "load session", err)
+		return
+	}
+	file, ok := imageFile(w, r)
+	if !ok {
+		return
+	}
+	defer func() { _ = file.Close() }()
+	name, ok := a.save(w, sessionID, "img", file)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"image_url": game.UploadsPrefix + name})
+}
+
+// deleteSession removes a session for good: its log, snapshots, members,
+// and uploaded images. Connected clients are told it's gone. DM only.
+func (a *api) deleteSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "id")
+	claims, ok := a.bearer(w, r, sessionID)
+	if !ok {
+		return
+	}
+	if claims.Role != auth.RoleDM {
+		writeError(w, http.StatusForbidden, "only the DM can delete the session")
+		return
+	}
+	// Rows first, so nothing can start the session again; then stop it.
+	switch err := a.Store.DeleteSession(r.Context(), sessionID); {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "no such session")
+		return
+	case err != nil:
+		a.internalError(w, "delete session", err)
+		return
+	}
+	a.Sessions.Delete(r.Context(), sessionID)
+	if sessionDir.MatchString(sessionID) {
+		if err := a.uploads(func(root *os.Root) error { return root.RemoveAll(sessionID) }); err != nil {
+			a.Log.Warn("removing a deleted session's uploads", "session", sessionID, "err", err)
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // saveImage checks the file really is an image, by content rather than the
-// name the browser sent, and writes it under a random name.
-func (a *api) saveImage(file io.Reader) (string, error) {
+// name the browser sent, and writes it under a random name in the
+// session's folder. It returns the path relative to the uploads dir.
+func (a *api) saveImage(sessionID, prefix string, file io.Reader) (string, error) {
+	if !sessionDir.MatchString(sessionID) {
+		return "", badImageError("bad session")
+	}
 	head := make([]byte, 512)
 	n, err := io.ReadFull(file, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
@@ -225,28 +326,36 @@ func (a *api) saveImage(file io.Reader) (string, error) {
 		return "", badImageError("image must be PNG, JPEG, WebP, or GIF")
 	}
 
-	name := ids.New("map") + ext
-	tmp, err := os.CreateTemp(a.UploadDir, ".upload-*")
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }() // no-op after the rename
-	if _, err := tmp.Write(head); err != nil {
-		_ = tmp.Close()
-		return "", err
-	}
-	if _, err := io.Copy(tmp, file); err != nil {
-		_ = tmp.Close()
-		var tooBig *http.MaxBytesError
-		if errors.As(err, &tooBig) {
-			return "", badImageError("image must be at most 20 MB")
+	name := sessionID + "/" + ids.New(prefix) + ext
+	err = a.uploads(func(root *os.Root) error {
+		if err := root.MkdirAll(sessionID, 0o750); err != nil {
+			return err
 		}
-		return "", err
+		// Written under a temporary name and renamed, so a half-written
+		// file is never served.
+		tmp := sessionID + "/.upload-" + ids.Random(6)
+		f, err := root.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = root.Remove(tmp) }() // no-op after the rename
+		_, err = f.Write(head)
+		if err == nil {
+			_, err = io.Copy(f, file)
+		}
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			return err
+		}
+		return root.Rename(tmp, name)
+	})
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) {
+		return "", badImageError("image must be at most 20 MB")
 	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	return name, os.Rename(tmp.Name(), filepath.Join(a.UploadDir, name))
+	return name, err
 }
 
 const (
@@ -300,19 +409,30 @@ func (a *api) eventHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-var uploadName = regexp.MustCompile(`^map_[a-z2-7]+\.(png|jpg|webp|gif)$`)
+var (
+	uploadName = regexp.MustCompile(`^(map|img)_[a-z2-7]+\.(png|jpg|webp|gif)$`)
+	sessionDir = regexp.MustCompile(`^ses_[a-z0-9]+$`) // safe as a folder name
+)
 
-// serveUpload serves a stored map image. Names are random and never reused,
-// so images can be cached forever.
+// serveUpload serves an uploaded image: /uploads/<session>/<name>, or
+// /uploads/<name> for ones from before uploads were kept per session.
+// Names are random and never reused, so images can be cached forever.
 func (a *api) serveUpload(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if !uploadName.MatchString(name) {
 		http.NotFound(w, r)
 		return
 	}
+	if dir := chi.URLParam(r, "session"); dir != "" {
+		if !sessionDir.MatchString(dir) {
+			http.NotFound(w, r)
+			return
+		}
+		name = dir + "/" + name
+	}
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	http.ServeFileFS(w, r, os.DirFS(a.UploadDir), name) //nolint:gosec // name matched uploadName, and DirFS rejects ".."
+	http.ServeFileFS(w, r, os.DirFS(a.UploadDir), name) //nolint:gosec // both parts matched their patterns, and DirFS rejects ".."
 }
 
 // bearer checks the Authorization header holds a valid token for sessionID.

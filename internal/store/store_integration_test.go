@@ -219,3 +219,33 @@ func TestGroupCommit(t *testing.T) {
 		}
 	}
 }
+
+func TestDeleteSession(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	if err := s.CreateSession(ctx, Session{ID: "ses_del", Name: "Doomed", InviteCode: "x"}, dmMember); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(ctx, "ses_del", []game.Event{ev(2, game.TokenRemoved{Token: "t"})}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSnapshot(ctx, "ses_del", 2, 1, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSession(ctx, "ses_del"); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"sessions", "events", "snapshots", "members"} {
+		col := "session_id"
+		if table == "sessions" {
+			col = "id"
+		}
+		var n int
+		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE `+col+` = 'ses_del'`).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("%s still has %d rows (%v)", table, n, err)
+		}
+	}
+	if err := s.DeleteSession(ctx, "ses_del"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second delete: %v", err)
+	}
+}

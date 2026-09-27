@@ -162,8 +162,13 @@ func Project(s *State, v Viewer, ev Event) Event {
 	}
 
 	switch d := ev.Data.(type) {
-	case MemberJoined, CellsPainted, SettingsChanged, FogSet, CombatEnded, Hidden:
-		return ev
+	case MemberJoined, CellsPainted, SettingsChanged, FogSet, CombatEnded, Hidden,
+		DrawingAdded, DrawingErased, DrawingsCleared:
+		return ev // drawings sit under the fog, so players see them only where it's lifted
+	case TokenImageSet:
+		if t := s.Tokens[d.Token]; t != nil && s.tokenVisible(v, t) {
+			return ev
+		}
 	case MapSet:
 		d.Map.Fog = d.Map.Fog.viewFor(v.User)
 		return with(d)
@@ -288,6 +293,7 @@ func (s *State) clone() *State {
 		m := *s.Map
 		m.Terrain = maps.Clone(s.Map.Terrain)
 		m.Fog = s.Map.Fog.clone()
+		m.Drawings = slices.Clone(s.Map.Drawings)
 		c.Map = &m
 	}
 	c.Tokens = make(map[TokenID]*Token, len(s.Tokens))

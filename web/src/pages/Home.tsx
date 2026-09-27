@@ -1,6 +1,6 @@
 import "@fontsource/press-start-2p";
 import { lazy, Suspense, useState, type FormEvent } from "react";
-import { createSession, loadSeats, saveSeat } from "../api";
+import { createSession, forgetSeat, loadSeats, saveSeat } from "../api";
 import { AsciiTitle } from "../components/AsciiTitle";
 import { navigate } from "../nav";
 
@@ -20,7 +20,7 @@ export function Home() {
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const seats = Object.values(loadSeats());
+  const [seats, setSeats] = useState(() => Object.values(loadSeats()));
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -79,6 +79,17 @@ export function Home() {
                   {s.name}
                 </a>{" "}
                 <span className="muted">{s.role === "dm" ? "DM" : "player"}</span>
+                <button
+                  className="icon"
+                  title="Remove from this list (the session itself stays)"
+                  aria-label={`Remove ${s.name} from this list`}
+                  onClick={() => {
+                    forgetSeat(s.session);
+                    setSeats(Object.values(loadSeats()));
+                  }}
+                >
+                  ×
+                </button>
               </li>
             ))}
           </ul>

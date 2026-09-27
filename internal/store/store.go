@@ -79,6 +79,27 @@ func (p *Postgres) Session(ctx context.Context, id string) (Session, error) {
 	return s, nil
 }
 
+// DeleteSession removes a session and everything recorded for it, or
+// returns ErrNotFound.
+func (p *Postgres) DeleteSession(ctx context.Context, id string) error {
+	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		for _, table := range []string{"events", "snapshots", "members"} {
+			if _, err := tx.Exec(ctx, `DELETE FROM `+table+` WHERE session_id = $1`, id); err != nil {
+				return err
+			}
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM sessions WHERE id = $1`, id)
+		if err == nil && tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return err
+	})
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("store: delete session: %w", err)
+	}
+	return err
+}
+
 func (p *Postgres) AddMember(ctx context.Context, sessionID string, m game.Member) error {
 	return insertMember(ctx, p.pool, sessionID, m)
 }

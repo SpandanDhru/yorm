@@ -50,6 +50,7 @@ type (
 		done   chan<- error // buffered
 	}
 	leaveMsg  struct{ client *Client }
+	deleteMsg struct{}
 	viewAsMsg struct {
 		client *Client
 		user   game.UserID // empty to go back to the DM's own view
@@ -117,6 +118,14 @@ func (a *actor) run() {
 	for {
 		select {
 		case m := <-a.inbox:
+			if _, ok := m.(deleteMsg); ok {
+				// The session's rows are gone: no final snapshot.
+				for c := range a.clients {
+					c.Close(ReasonDeleted)
+				}
+				a.snapshots.Wait()
+				return
+			}
 			if stop := a.handle(m); stop {
 				// Another writer owns the log, so this state may be stale:
 				// don't snapshot it.

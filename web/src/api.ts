@@ -48,6 +48,29 @@ export function uploadMap(seat: Seat, image: File, grid: Grid): Promise<{ image_
   });
 }
 
+// uploadImage stores a picture for a token and returns its URL.
+export function uploadImage(seat: Seat, image: File): Promise<{ image_url: string }> {
+  const form = new FormData();
+  form.set("image", image);
+  return call(`/api/sessions/${encodeURIComponent(seat.session)}/images`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${seat.token}` },
+    body: form,
+  });
+}
+
+// deleteSession removes the session for everyone. DM only.
+export async function deleteSession(seat: Seat): Promise<void> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(seat.session)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${seat.token}` },
+  });
+  if (!res.ok && res.status !== 404) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `request failed (${res.status})`);
+  }
+}
+
 // Seats are the only identity there is (no accounts), so they live in
 // localStorage. Losing one means rejoining through the invite link.
 const SEATS_KEY = "yorm.seats";
@@ -69,6 +92,18 @@ export function saveSeat(seat: Seat): void {
     localStorage.setItem(SEATS_KEY, JSON.stringify(loadSeats()));
   } catch {
     // The seat lasts until the tab closes.
+  }
+}
+
+// forgetSeat removes a session from this browser's list.
+export function forgetSeat(session: string): void {
+  delete memorySeats[session];
+  try {
+    const stored = JSON.parse(localStorage.getItem(SEATS_KEY) ?? "{}") as Record<string, Seat>;
+    delete stored[session];
+    localStorage.setItem(SEATS_KEY, JSON.stringify(stored));
+  } catch {
+    // Nothing stored to forget.
   }
 }
 

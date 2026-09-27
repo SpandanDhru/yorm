@@ -63,6 +63,22 @@ func cellsOf(cells []Cell, r *Rect) []Cell {
 	return cells
 }
 
+// TokenImageSet sets or (with an empty Image) clears a token's picture.
+type TokenImageSet struct {
+	Token TokenID `json:"token"`
+	Image string  `json:"image"`
+}
+
+type DrawingAdded struct {
+	Drawing Drawing `json:"drawing"`
+}
+
+type DrawingErased struct {
+	ID string `json:"id"`
+}
+
+type DrawingsCleared struct{}
+
 type TokenHidden struct {
 	Token TokenID `json:"token"`
 }
@@ -164,6 +180,10 @@ func (FogSet) EventName() string           { return "FogSet" }
 func (FogRevealed) EventName() string      { return "FogRevealed" }
 func (FogHidden) EventName() string        { return "FogHidden" }
 func (Hidden) EventName() string           { return "Hidden" }
+func (TokenImageSet) EventName() string    { return "TokenImageSet" }
+func (DrawingAdded) EventName() string     { return "DrawingAdded" }
+func (DrawingErased) EventName() string    { return "DrawingErased" }
+func (DrawingsCleared) EventName() string  { return "DrawingsCleared" }
 
 var payloads = map[string]func([]byte) (Payload, error){
 	"MemberJoined":     decode[MemberJoined],
@@ -194,6 +214,10 @@ var payloads = map[string]func([]byte) (Payload, error){
 	"FogRevealed":      decode[FogRevealed],
 	"FogHidden":        decode[FogHidden],
 	"Hidden":           decode[Hidden],
+	"TokenImageSet":    decode[TokenImageSet],
+	"DrawingAdded":     decode[DrawingAdded],
+	"DrawingErased":    decode[DrawingErased],
+	"DrawingsCleared":  decode[DrawingsCleared],
 }
 
 func decode[T Payload](data []byte) (Payload, error) {

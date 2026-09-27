@@ -58,6 +58,10 @@ func DefaultOptions() Options {
 	}
 }
 
+// ReasonDeleted is the reason Client.Close gets when the session has been
+// deleted; the client should not reconnect.
+const ReasonDeleted = "session deleted"
+
 var (
 	// ErrNotFound means the session does not exist.
 	ErrNotFound = store.ErrNotFound
@@ -323,6 +327,27 @@ func (m *Manager) Do(ctx context.Context, sessionID string, cmd game.Command) (i
 		}
 	}
 	return 0, errStopped
+}
+
+// Delete stops the session's actor, if it's running, disconnecting its
+// clients for good. Call it after deleting the session from the store, so
+// nothing can start it again.
+func (m *Manager) Delete(ctx context.Context, sessionID string) {
+	m.mu.Lock()
+	e := m.actors[sessionID]
+	delete(m.actors, sessionID)
+	m.mu.Unlock()
+	if e == nil {
+		return
+	}
+	select {
+	case <-e.ready:
+	case <-ctx.Done():
+		return
+	}
+	if e.a != nil {
+		_ = e.a.send(ctx, deleteMsg{})
+	}
 }
 
 // Active reports how many session actors are running.

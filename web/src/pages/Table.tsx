@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { loadSeats, type Seat } from "../api";
+import { forgetSeat, loadSeats, type Seat } from "../api";
 import { MapCanvas, type Paint } from "../components/MapCanvas";
 import { Sidebar } from "../components/Sidebar";
+import { simplify, split } from "../draw";
 import { navigate } from "../nav";
 import { Connection, type Status } from "../socket";
 import { initialTable, reducer } from "../store";
@@ -121,6 +122,14 @@ function TableView({ seat }: { seat: Seat }) {
     [command],
   );
 
+  // A pen stroke goes as one or more draw commands, thinned out first.
+  const draw = useCallback(
+    (points: number[], color: string, width: number) => {
+      for (const piece of split(simplify(points))) command("draw", { points: piece, color, width });
+    },
+    [command],
+  );
+
   // The DM can look at the table as one of the players sees it.
   const [viewAs, setViewAs] = useState("");
   const viewing = (user: string) => {
@@ -140,6 +149,25 @@ function TableView({ seat }: { seat: Seat }) {
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
   }, [seat.role, selectedToken, command]);
+
+  if (status === "gone") {
+    return (
+      <main className="page">
+        <div className="card stack">
+          <h2>{seat.name} is gone</h2>
+          <p>The DM deleted this session, so there's nothing to go back to.</p>
+          <button
+            onClick={() => {
+              forgetSeat(seat.session);
+              navigate("/");
+            }}
+          >
+            Back home
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <div className="table">
@@ -179,6 +207,9 @@ function TableView({ seat }: { seat: Seat }) {
         onSelect={setSelected}
         onMove={move}
         onPaint={paint}
+        onDraw={draw}
+        onErase={(id) => command("erase_drawing", { id })}
+        onClearDrawings={() => confirm("Erase every drawing on the map?") && command("clear_drawings", {})}
       />
       {table.game && <Sidebar seat={seat} game={table.game} feed={table.feed} selected={selectedToken} command={command} />}
       {notice && (

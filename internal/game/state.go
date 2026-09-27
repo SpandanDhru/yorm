@@ -55,14 +55,23 @@ const (
 )
 
 type Map struct {
-	ID         string  `json:"id"`
-	ImageURL   string  `json:"image_url"`  // empty for a blank map
-	Background string  `json:"background"` // #rrggbb, shown when there is no image
-	Cols       int     `json:"cols"`
-	Rows       int     `json:"rows"`
-	CellFeet   int     `json:"cell_feet"`
-	Terrain    Terrain `json:"terrain"`
-	Fog        Fog     `json:"fog"`
+	ID         string    `json:"id"`
+	ImageURL   string    `json:"image_url"`  // empty for a blank map
+	Background string    `json:"background"` // #rrggbb, shown when there is no image
+	Cols       int       `json:"cols"`
+	Rows       int       `json:"rows"`
+	CellFeet   int       `json:"cell_feet"`
+	Terrain    Terrain   `json:"terrain"`
+	Fog        Fog       `json:"fog"`
+	Drawings   []Drawing `json:"drawings"` // the DM's pen strokes, oldest first
+}
+
+// Drawing is a freehand stroke on the map.
+type Drawing struct {
+	ID     string    `json:"id"`
+	Color  string    `json:"color"`  // #rrggbb
+	Width  float64   `json:"width"`  // in cells
+	Points []float64 `json:"points"` // x0, y0, x1, y1, …, in cells from the map's top-left
 }
 
 // Terrain holds the painted cells; unpainted cells are clear. In JSON it
@@ -124,6 +133,7 @@ type Token struct {
 	Size        int      `json:"size"` // cells per side: 1 medium, 2 large
 	Controllers []UserID `json:"controllers"`
 	Hidden      bool     `json:"hidden,omitempty"` // only the DM sees it
+	Image       string   `json:"image,omitempty"`  // an uploaded picture, shown in the token's circle
 }
 
 type ActorKind string
@@ -237,6 +247,7 @@ func (s *State) Apply(ev Event) {
 			m.Terrain = Terrain{}
 		}
 		m.Fog = m.Fog.clone()
+		m.Drawings = slices.Clone(m.Drawings)
 		s.Map = &m
 	case CellsPainted:
 		if s.Map == nil {
@@ -259,6 +270,24 @@ func (s *State) Apply(ev Event) {
 		*rolls = append(*rolls, Roll{Seq: ev.Seq, By: ev.By, At: ev.At, DiceRolled: d})
 		if len(*rolls) > MaxRolls {
 			*rolls = slices.Clone((*rolls)[len(*rolls)-MaxRolls:])
+		}
+	case TokenImageSet:
+		if t := s.Tokens[d.Token]; t != nil {
+			t.Image = d.Image
+		}
+	case DrawingAdded:
+		if s.Map != nil {
+			dr := d.Drawing
+			dr.Points = slices.Clone(dr.Points)
+			s.Map.Drawings = append(slices.Clone(s.Map.Drawings), dr)
+		}
+	case DrawingErased:
+		if s.Map != nil {
+			s.Map.Drawings = slices.DeleteFunc(slices.Clone(s.Map.Drawings), func(dr Drawing) bool { return dr.ID == d.ID })
+		}
+	case DrawingsCleared:
+		if s.Map != nil {
+			s.Map.Drawings = nil
 		}
 	case TokenHidden:
 		if t := s.Tokens[d.Token]; t != nil {

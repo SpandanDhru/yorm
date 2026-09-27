@@ -73,9 +73,26 @@ func (f *fakeStore) AddMember(_ context.Context, id string, m game.Member) error
 
 // fakeCommander records commands and answers with err.
 type fakeCommander struct {
-	mu   sync.Mutex
-	cmds []game.Command
-	err  error
+	mu      sync.Mutex
+	cmds    []game.Command
+	err     error
+	deleted []string
+}
+
+func (f *fakeCommander) Delete(_ context.Context, id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleted = append(f.deleted, id)
+}
+
+func (f *fakeStore) DeleteSession(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.sessions[id]; !ok {
+		return store.ErrNotFound
+	}
+	delete(f.sessions, id)
+	return nil
 }
 
 func (f *fakeCommander) Do(_ context.Context, _ string, cmd game.Command) (int64, error) {
@@ -262,14 +279,17 @@ func uploadReq(t *testing.T, session, token string, file []byte, fields map[stri
 	return req
 }
 
+// files lists the files (not folders) under dir, as paths relative to it.
 func files(t *testing.T, dir string) []string {
 	t.Helper()
-	ents, err := os.ReadDir(dir)
-	must(t, err)
 	var names []string
-	for _, e := range ents {
-		names = append(names, e.Name())
-	}
+	must(t, filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			rel, _ := filepath.Rel(dir, path)
+			names = append(names, filepath.ToSlash(rel))
+		}
+		return err
+	}))
 	return names
 }
 
@@ -401,5 +421,79 @@ func TestEventHistory(t *testing.T) {
 				t.Fatalf("status = %d, want %d", rec.Code, tt.code)
 			}
 		})
+	}
+}
+
+func imageReq(t *testing.T, session, token string, file []byte) *http.Request {
+	t.Helper()
+	req := uploadReq(t, session, token, file, nil)
+	req.URL.Path = "/api/sessions/" + session + "/images"
+	return req
+}
+
+func TestUploadTokenImage(t *testing.T) {
+	a := newAPI(t, nil)
+	created := decode[joinResp](t, a.postJSON("/api/sessions", `{"name":"Pics"}`))
+	sid := created.Session
+	player := a.token(sid, "usr_kai", auth.RolePlayer)
+
+	if rec := a.do(imageReq(t, sid, "", pngBytes(t))); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: %d", rec.Code)
+	}
+	if rec := a.do(imageReq(t, sid, player, []byte("not an image"))); rec.Code != http.StatusBadRequest {
+		t.Fatalf("not an image: %d", rec.Code)
+	}
+	if rec := a.do(imageReq(t, "ses_gone", a.token("ses_gone", "usr_kai", auth.RolePlayer), pngBytes(t))); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing session: %d", rec.Code)
+	}
+
+	rec := a.do(imageReq(t, sid, player, pngBytes(t)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("upload: %d %s", rec.Code, rec.Body)
+	}
+	url := decode[struct {
+		ImageURL string `json:"image_url"`
+	}](t, rec).ImageURL
+	if !strings.HasPrefix(url, "/uploads/"+sid+"/img_") {
+		t.Fatalf("url = %s", url)
+	}
+	if get := a.do(httptest.NewRequest(http.MethodGet, url, nil)); get.Code != http.StatusOK || get.Body.Len() == 0 {
+		t.Fatalf("GET %s: %d", url, get.Code)
+	}
+	for _, bad := range []string{"/uploads/..%2f" + sid + "/img_a.png", "/uploads/" + sid + "/secret.txt", "/uploads/SES_1/img_a.png"} {
+		if got := a.do(httptest.NewRequest(http.MethodGet, bad, nil)); got.Code != http.StatusNotFound {
+			t.Errorf("GET %s: %d, want 404", bad, got.Code)
+		}
+	}
+}
+
+func TestDeleteSession(t *testing.T) {
+	a := newAPI(t, nil)
+	created := decode[joinResp](t, a.postJSON("/api/sessions", `{"name":"Doomed"}`))
+	sid := created.Session
+	if rec := a.do(imageReq(t, sid, created.Token, pngBytes(t))); rec.Code != http.StatusCreated {
+		t.Fatalf("upload: %d", rec.Code)
+	}
+	del := func(token string) int {
+		req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sid, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		return a.do(req).Code
+	}
+	if code := del(a.token(sid, "usr_kai", auth.RolePlayer)); code != http.StatusForbidden {
+		t.Fatalf("player delete: %d", code)
+	}
+	if code := del(created.Token); code != http.StatusNoContent {
+		t.Fatalf("DM delete: %d", code)
+	}
+	if len(a.cmds.deleted) != 1 || a.cmds.deleted[0] != sid {
+		t.Fatalf("manager told to delete %v", a.cmds.deleted)
+	}
+	if f := files(t, a.dir); len(f) != 0 {
+		t.Fatalf("uploads left behind: %v", f)
+	}
+	if code := del(created.Token); code != http.StatusNotFound {
+		t.Fatalf("second delete: %d", code)
 	}
 }

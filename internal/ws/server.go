@@ -127,7 +127,13 @@ func (s *Server) run(c *conn) {
 func (s *Server) play(c *conn) error {
 	ctx, cancel := context.WithTimeout(c.ctx, s.opts.WriteTimeout)
 	seat, err := s.sessions.Join(ctx, c.claims.Session, game.UserID(c.claims.User), c.claims.Role,
-		c.enqueue, func(reason string) { c.fail(websocket.StatusServiceRestart, reason) })
+		c.enqueue, func(reason string) {
+			if reason == session.ReasonDeleted {
+				c.fail(StatusSessionNotFound, reason) // don't come back
+				return
+			}
+			c.fail(websocket.StatusServiceRestart, reason)
+		})
 	cancel()
 	if errors.Is(err, session.ErrNotFound) {
 		c.fail(StatusSessionNotFound, "session not found")

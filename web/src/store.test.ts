@@ -8,7 +8,7 @@ const base: GameState = {
   id: "ses_1",
   seq: 3,
   settings: { diagonal: "5" },
-  map: { id: "map_1", image_url: "/uploads/m.png", background: "#e8e0cc", cols: 10, rows: 10, cell_feet: 5, terrain: { "0,0": "wall" }, fog: { enabled: false, party: null, users: null } },
+  map: { id: "map_1", image_url: "/uploads/m.png", background: "#e8e0cc", cols: 10, rows: 10, cell_feet: 5, terrain: { "0,0": "wall" }, fog: { enabled: false, party: null, users: null }, drawings: null },
   tokens: { tok_1: rogue },
   actors: {},
   members: {},
@@ -234,5 +234,24 @@ describe("visibility", () => {
     const g = { ...base, actors: { a: { id: "a", name: "Goblin", masked: true } as Character } };
     const hit = ev(4, { name: "HPChanged", data: { actor: "a", hp: { current: 0, max: 0, temp: 0 }, delta: -1, hp_state: "bloodied" } });
     expect(describeEvent(g, hit)).toBe("Goblin was hurt (bloodied)");
+  });
+});
+
+describe("pictures and drawings", () => {
+  it("sets and clears token images", () => {
+    let s = applyEvent(base, ev(4, { name: "TokenImageSet", data: { token: "tok_1", image: "/uploads/ses_1/img_a.png" } }));
+    expect(s.tokens.tok_1?.image).toBe("/uploads/ses_1/img_a.png");
+    s = applyEvent(s, ev(5, { name: "TokenImageSet", data: { token: "tok_1", image: "" } }));
+    expect(s.tokens.tok_1?.image).toBeUndefined();
+  });
+
+  it("adds, erases, and clears drawings", () => {
+    const d = (id: string) => ({ id, color: "#ff0000", width: 0.1, points: [0, 0, 1, 1] });
+    let s = applyEvent(base, ev(4, { name: "DrawingAdded", data: { drawing: d("a") } }));
+    s = applyEvent(s, ev(5, { name: "DrawingAdded", data: { drawing: d("b") } }));
+    s = applyEvent(s, ev(6, { name: "DrawingErased", data: { id: "a" } }));
+    expect(s.map?.drawings?.map((x) => x.id)).toEqual(["b"]);
+    s = applyEvent(s, ev(7, { name: "DrawingsCleared", data: {} }));
+    expect(s.map?.drawings).toBeNull();
   });
 });

@@ -266,6 +266,10 @@ func TestPayloadRoundTrip(t *testing.T) {
 		FogRevealed{For: kai, Cells: []Cell{{1, 1}}, Rect: &Rect{From: Cell{0, 0}, To: Cell{2, 2}}},
 		FogHidden{Cells: []Cell{{1, 1}}},
 		Hidden{},
+		TokenImageSet{Token: "t", Image: "/uploads/ses_1/img_a.png"},
+		DrawingAdded{Drawing: Drawing{ID: "d", Color: "#ff0000", Width: 0.1, Points: []float64{0, 0, 1.5, 2.25}}},
+		DrawingErased{ID: "d"},
+		DrawingsCleared{},
 	}
 	if len(all) != len(payloads) {
 		t.Fatalf("test covers %d payloads, registry has %d", len(all), len(payloads))

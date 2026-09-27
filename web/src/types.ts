@@ -21,6 +21,14 @@ export interface MapInfo {
   cell_feet: number;
   terrain: Record<string, TerrainKind>; // keyed by "x,y"
   fog: Fog;
+  drawings: Drawing[] | null; // the DM's pen strokes, oldest first
+}
+
+export interface Drawing {
+  id: string;
+  color: string;
+  width: number; // in cells
+  points: number[]; // x0, y0, x1, y1, … in cells
 }
 
 // Fog of war. Bitsets are base64, bit y*cols+x per cell; see game.Bits.
@@ -50,6 +58,7 @@ export interface Token {
   size: number;
   controllers: UserID[];
   hidden?: boolean; // only the DM (and its controllers) see it
+  image?: string; // an uploaded picture, shown in the token's circle
 }
 
 export type ActorKind = "pc" | "npc" | "monster";
@@ -184,6 +193,10 @@ export type GameEvent = EventBase &
     | { name: "FogRevealed"; data: { for?: UserID; cells?: Cell[]; rect?: Rect } }
     | { name: "FogHidden"; data: { for?: UserID; cells?: Cell[]; rect?: Rect } }
     | { name: "Hidden"; data: Record<string, never> }
+    | { name: "TokenImageSet"; data: { token: TokenID; image: string } }
+    | { name: "DrawingAdded"; data: { drawing: Drawing } }
+    | { name: "DrawingErased"; data: { id: string } }
+    | { name: "DrawingsCleared"; data: Record<string, never> }
     | { name: "ConditionAdded"; data: { actor: ActorID; condition: Condition } }
     | { name: "ConditionRemoved"; data: { actor: ActorID; name: string } }
     | { name: "CombatStarted"; data: { order: InitEntry[] } }

@@ -1,6 +1,6 @@
 # Yorm
 
-A live battle map for tabletop RPGs. The DM builds a map from an image or paints walls and difficult terrain onto a blank grid; players join from an invite link and move their own tokens, and everyone sees every move instantly. It runs combat for the table: initiative, turns, movement, actions, HP, conditions, and a shared dice log that takes server rolls or real dice. Fog of war, hidden tokens, and secret rolls are enforced by the server, so a player's browser never receives what they aren't meant to see.
+A live battle map for tabletop RPGs. The DM builds a map from an image or paints walls and difficult terrain onto a blank grid; players join from an invite link and move their own tokens, and everyone sees every move instantly. It runs combat for the table: initiative, turns, movement, actions, HP, conditions, and a shared dice log that takes server rolls or real dice. Tokens can carry uploaded pictures, and the DM can draw freehand on the map with a pen. Fog of war, hidden tokens, and secret rolls are enforced by the server, so a player's browser never receives what they aren't meant to see.
 
 The Go server is authoritative: every rule lives there, every change is an event in an append-only log in Postgres, and a crashed server comes back exactly where the table left off.
 

@@ -148,6 +148,20 @@ export function applyEvent(s: GameState, ev: GameEvent): GameState {
       else next.rolls = [...s.rolls, roll].slice(-MAX_ROLLS);
       break;
     }
+    case "TokenImageSet": {
+      const t = s.tokens[ev.data.token];
+      if (t) next.tokens = { ...s.tokens, [t.id]: { ...t, image: ev.data.image || undefined } };
+      break;
+    }
+    case "DrawingAdded":
+      if (s.map) next.map = { ...s.map, drawings: [...(s.map.drawings ?? []), ev.data.drawing] };
+      break;
+    case "DrawingErased":
+      if (s.map) next.map = { ...s.map, drawings: (s.map.drawings ?? []).filter((d) => d.id !== ev.data.id) };
+      break;
+    case "DrawingsCleared":
+      if (s.map) next.map = { ...s.map, drawings: null };
+      break;
     case "TokenHidden":
     case "TokenRevealed": {
       const t = s.tokens[ev.data.token];

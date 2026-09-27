@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -682,4 +684,74 @@ func TestVisibility(t *testing.T) {
 	if s := connect(t, srv2, sid, dmSeat.Token).snapshot(); s.Tokens[tok.ID] == nil || len(s.SecretRolls) != 1 {
 		t.Fatal("after a restart, the DM lost hidden things")
 	}
+}
+
+// TestDeleteSessionEndToEnd deletes a session with players connected: they
+// are told it's gone (4404), can't come back, and its pictures are removed.
+func TestDeleteSessionEndToEnd(t *testing.T) {
+	st, signer, uploads := newStack(t)
+	srv := startServer(t, st, signer, uploads)
+	base := srv.http.URL + "/api/sessions"
+	dmSeat := postJSON[joinResp](t, base, `{"name":"Short-lived"}`)
+	sid := dmSeat.Session
+	kaiSeat := postJSON[joinResp](t, base+"/"+sid+"/join", `{"code":"`+dmSeat.InviteCode+`","display_name":"Kai"}`)
+
+	// A picture, so there's something on disk to clean up.
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, _ := mw.CreateFormFile("image", "owl.png")
+	var img bytes.Buffer
+	_ = png.Encode(&img, image.NewRGBA(image.Rect(0, 0, 4, 4)))
+	_, _ = fw.Write(img.Bytes())
+	_ = mw.Close()
+	req, _ := http.NewRequest(http.MethodPost, base+"/"+sid+"/images", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+kaiSeat.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusCreated {
+		t.Fatalf("upload: %v %v", resp.Status, err)
+	}
+	_ = resp.Body.Close()
+	if _, err := os.Stat(filepath.Join(uploads, sid)); err != nil {
+		t.Fatalf("no upload folder: %v", err)
+	}
+
+	kai := connect(t, srv, sid, kaiSeat.Token)
+	kai.snapshot()
+
+	req, _ = http.NewRequest(http.MethodDelete, base+"/"+sid, nil)
+	req.Header.Set("Authorization", "Bearer "+dmSeat.Token)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete: %v %v", resp.Status, err)
+	}
+	_ = resp.Body.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, _, err := kai.c.Read(ctx); websocket.CloseStatus(err) != 4404 {
+		t.Fatalf("connected player closed with %v, want 4404", err)
+	}
+	again := connectRaw(t, srv, sid, kaiSeat.Token)
+	if _, _, err := again.Read(ctx); websocket.CloseStatus(err) != 4404 {
+		if _, _, err = again.Read(ctx); websocket.CloseStatus(err) != 4404 { // after the welcome
+			t.Fatalf("reconnecting got %v, want 4404", err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(uploads, sid)); !os.IsNotExist(err) {
+		t.Fatalf("upload folder still there: %v", err)
+	}
+}
+
+func connectRaw(t *testing.T, s *server, session, token string) *websocket.Conn {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	u := "ws" + strings.TrimPrefix(s.http.URL, "http") + "/ws/sessions/" + session + "?token=" + url.QueryEscape(token)
+	c, _, err := websocket.Dial(ctx, u, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.CloseNow() })
+	return c
 }
