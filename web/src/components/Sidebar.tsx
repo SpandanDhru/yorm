@@ -4,6 +4,7 @@ import { navigate } from "../nav";
 import { canControl, freeCell, tokenFor } from "../store";
 import type { GameState, MapInfo, Token, TokenID } from "../types";
 import { CharactersPanel } from "./Characters";
+import { ask } from "./Dialog";
 import { NumberInput } from "./NumberInput";
 import { Initiative } from "./Initiative";
 import { LogPanel } from "./Log";
@@ -156,7 +157,7 @@ function DeleteSession({ seat }: { seat: Seat }) {
       <button
         className="danger"
         onClick={async () => {
-          if (!confirm(`Delete "${seat.name}" for everyone? This can't be undone.`)) return;
+          if (!(await ask(`Delete "${seat.name}" for everyone? This can't be undone.`, { confirm: "Delete session", danger: true }))) return;
           try {
             await deleteSession(seat);
             forgetSeat(seat.session);

@@ -1,4 +1,3 @@
-import "@fontsource/press-start-2p";
 import { lazy, Suspense, useState, type FormEvent } from "react";
 import { createSession, forgetSeat, loadSeats, saveSeat } from "../api";
 import { AsciiTitle } from "../components/AsciiTitle";

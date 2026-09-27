@@ -52,6 +52,8 @@ export const TERRAIN: Record<PaintKind, { label: string; fill: string; hatch?: b
   cover: { label: "Cover", fill: "rgba(12,13,17,0.75)" },
 };
 
+const PIXEL_FONT = '"Press Start 2P", monospace';
+
 const HP_COLORS = { healthy: "#4caf7a", bloodied: "#e0a030", down: "#555555" };
 
 const TERRAIN_KINDS: PaintKind[] = ["wall", "difficult", "water", "hazard", "clear"];
@@ -356,8 +358,8 @@ export function MapCanvas({ table, me, isDM, dmView, selected, onSelect, onMove,
                     height={px}
                     align="center"
                     verticalAlign="middle"
-                    fontSize={px * 0.32}
-                    fontStyle="bold"
+                    fontSize={px * 0.24}
+                    fontFamily={PIXEL_FONT}
                     fill="#ffffff"
                     listening={false}
                   />
@@ -374,11 +376,13 @@ export function MapCanvas({ table, me, isDM, dmView, selected, onSelect, onMove,
                   )}
                   <Text
                     text={label}
+                    // Wider than the token, so names fit on a line or two.
+                    x={-px / 2}
                     y={px - 2}
-                    width={px}
+                    width={px * 2}
                     align="center"
-                    fontSize={16}
-                    fontStyle="bold"
+                    fontSize={10}
+                    fontFamily={PIXEL_FONT}
                     fill="#ffffff"
                     shadowColor="black"
                     shadowBlur={4}
@@ -395,8 +399,8 @@ export function MapCanvas({ table, me, isDM, dmView, selected, onSelect, onMove,
                 width={CELL * (table.game!.tokens[dragging.token]?.size ?? 1)}
                 align="center"
                 text={dragging.feet === null ? "blocked" : `${dragging.feet} ft`}
-                fontSize={18}
-                fontStyle="bold"
+                fontSize={13}
+                fontFamily={PIXEL_FONT}
                 fill={dragging.feet === null || dragging.over ? "#ff6b5e" : "#ffffff"}
                 shadowColor="black"
                 shadowBlur={4}

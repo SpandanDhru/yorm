@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { forgetSeat, loadSeats, type Seat } from "../api";
 import { MapCanvas, type Paint } from "../components/MapCanvas";
 import { Sidebar } from "../components/Sidebar";
+import { ask } from "../components/Dialog";
 import { simplify, split } from "../draw";
 import { navigate } from "../nav";
 import { Connection, type Status } from "../socket";
@@ -209,7 +210,9 @@ function TableView({ seat }: { seat: Seat }) {
         onPaint={paint}
         onDraw={draw}
         onErase={(id) => command("erase_drawing", { id })}
-        onClearDrawings={() => confirm("Erase every drawing on the map?") && command("clear_drawings", {})}
+        onClearDrawings={async () => {
+          if (await ask("Erase every drawing on the map?", { confirm: "Erase all", danger: true })) command("clear_drawings", {});
+        }}
       />
       {table.game && <Sidebar seat={seat} game={table.game} feed={table.feed} selected={selectedToken} command={command} />}
       {notice && (

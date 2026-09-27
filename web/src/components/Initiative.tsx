@@ -3,6 +3,7 @@ import type { Seat } from "../api";
 import { canEdit } from "../store";
 import { HIDDEN_ACTOR, type ActionKind, type Encounter, type GameState, type InitEntry } from "../types";
 import { HPBar } from "./Characters";
+import { ask } from "./Dialog";
 
 type Command = (name: string, args: unknown) => void;
 
@@ -20,7 +21,12 @@ export function Initiative({ seat, game, command }: { seat: Seat; game: GameStat
       <div className="row initiative-head">
         <h3>{e.active ? `Combat · round ${e.round}` : "Rolling initiative"}</h3>
         {isDM && (
-          <button className="secondary small" onClick={() => confirm("End combat?") && command("end_combat", {})}>
+          <button
+            className="secondary small"
+            onClick={async () => {
+              if (await ask("End combat? Initiative and turns are cleared.", { confirm: "End combat" })) command("end_combat", {});
+            }}
+          >
             End
           </button>
         )}

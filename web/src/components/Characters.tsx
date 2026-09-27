@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import type { Seat } from "../api";
 import { canEdit, freeCell, hpFraction, hpLevel, tokenFor } from "../store";
 import type { ActorID, ActorKind, Character, GameState } from "../types";
+import { ask } from "./Dialog";
 import { NumberInput } from "./NumberInput";
 
 type Command = (name: string, args: unknown) => void;
@@ -208,8 +209,10 @@ function CharacterCard(p: {
               {isDM && (
                 <button
                   className="secondary"
-                  onClick={() => {
-                    if (confirm(`Delete ${a.name}? Their token is removed too.`)) command("delete_character", { actor: a.id });
+                  onClick={async () => {
+                    if (await ask(`Delete ${a.name}? Their token is removed too.`, { confirm: "Delete", danger: true })) {
+                      command("delete_character", { actor: a.id });
+                    }
                   }}
                 >
                   Delete
