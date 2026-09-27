@@ -376,12 +376,11 @@ export function MapCanvas({ table, me, isDM, dmView, selected, onSelect, onMove,
                   )}
                   <Text
                     text={label}
-                    // Wider than the token, so names fit on a line or two.
-                    x={-px / 2}
+                    // As wide as the token, so neighbours' names don't overlap.
                     y={px - 2}
-                    width={px * 2}
+                    width={px}
                     align="center"
-                    fontSize={10}
+                    fontSize={8}
                     fontFamily={PIXEL_FONT}
                     fill="#ffffff"
                     shadowColor="black"

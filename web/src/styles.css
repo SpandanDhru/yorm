@@ -8,8 +8,8 @@
   --danger: #d0524a;
   --ok: #4caf7a;
   color-scheme: dark;
-  font-family: "Press Start 2P", ui-monospace, monospace;
-  /* Layout is in rem at this size; text is sized on body instead (below). */
+  --pixel: "Press Start 2P", ui-monospace, monospace;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 15px;
   color: var(--text);
   background: var(--bg);
@@ -22,11 +22,7 @@
 body {
   margin: 0;
   background: var(--bg);
-  /* Press Start 2P is a wide pixel font, every letter a full square, so
-     text is small with roomy lines. Text sizes below are in em, relative
-     to this. */
-  font-size: 10px;
-  line-height: 1.7;
+  font-size: 15px;
 }
 
 code {
@@ -714,4 +710,76 @@ label.button {
 
 .dialog-buttons {
   justify-content: flex-end;
+}
+
+/* The pixel font is for headings, buttons, names, and labels: short text
+   that gives the app its look. Longer text (the log, hints, forms) stays
+   in the plain font, which is easier to read small. Press Start 2P is wide,
+   every letter a full square, so it's set smaller than the text around it. */
+h1,
+h2,
+h3,
+button,
+label.button,
+.topbar a,
+.topbar strong,
+.status,
+.card-name,
+.init-name,
+.init-total,
+.tag,
+.roll strong,
+.roll-total,
+.tagline {
+  font-family: var(--pixel);
+  line-height: 1.6;
+}
+
+h2 {
+  font-size: 14px;
+}
+
+h3 {
+  font-size: 10px;
+}
+
+button,
+label.button {
+  font-size: 10px;
+}
+
+button.small,
+.toolbar button {
+  font-size: 9px;
+}
+
+.chip-toggle {
+  font-size: 7px;
+}
+
+.topbar a,
+.topbar strong {
+  font-size: 11px;
+}
+
+.status {
+  font-size: 9px;
+}
+
+.card-name,
+.init-name,
+.init-total {
+  font-size: 10px;
+}
+
+.tag {
+  font-size: 7px;
+}
+
+.roll strong {
+  font-size: 9px;
+}
+
+.roll-total {
+  font-size: 16px;
 }
