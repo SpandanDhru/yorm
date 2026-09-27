@@ -3,6 +3,7 @@ import { inviteLink, uploadMap, type Seat } from "../api";
 import { freeCell, tokenFor } from "../store";
 import type { GameState, MapInfo, Token, TokenID } from "../types";
 import { CharactersPanel } from "./Characters";
+import { NumberInput } from "./NumberInput";
 import { Initiative } from "./Initiative";
 import { LogPanel } from "./Log";
 import type { FeedLine } from "../store";
@@ -277,15 +278,15 @@ function GridFields(p: {
     <div className="row">
       <label>
         Columns
-        <input type="number" min={1} max={200} value={p.cols} onChange={(e) => p.setCols(Number(e.target.value))} />
+        <NumberInput min={1} max={200} value={p.cols} onChange={p.setCols} />
       </label>
       <label>
         Rows
-        <input type="number" min={1} max={200} value={p.rows} onChange={(e) => p.setRows(Number(e.target.value))} />
+        <NumberInput min={1} max={200} value={p.rows} onChange={p.setRows} />
       </label>
       <label>
         Feet/cell
-        <input type="number" min={1} max={100} value={p.cellFeet} onChange={(e) => p.setCellFeet(Number(e.target.value))} />
+        <NumberInput min={1} max={100} value={p.cellFeet} onChange={p.setCellFeet} />
       </label>
     </div>
   );

@@ -609,3 +609,54 @@ button.icon {
   font-size: 0.8rem;
   font-weight: 600;
 }
+
+/* Home page */
+.home {
+  padding-top: 2.5rem;
+}
+
+.home > .page {
+  padding-top: 1rem;
+}
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.9rem;
+  padding: 0 16px;
+}
+
+.ascii-title {
+  margin: 0;
+  color: var(--accent);
+}
+
+.ascii-art {
+  display: block;
+  width: min(92vw, 34rem);
+  height: auto;
+  filter: drop-shadow(0 0 10px rgba(217, 164, 65, 0.35));
+}
+
+.tagline {
+  margin: 0;
+  font-family: "Press Start 2P", monospace;
+  white-space: nowrap;
+  font-size: clamp(0.45rem, 2.3vw, 0.75rem);
+  line-height: 1.6;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.sword {
+  width: min(100%, 28rem);
+  height: 240px;
+  touch-action: none;
+  cursor: grab;
+}
+
+.sword:active {
+  cursor: grabbing;
+}

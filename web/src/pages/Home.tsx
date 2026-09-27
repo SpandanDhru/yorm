@@ -1,6 +1,19 @@
-import { useState, type FormEvent } from "react";
+import "@fontsource/press-start-2p";
+import { lazy, Suspense, useState, type FormEvent } from "react";
 import { createSession, loadSeats, saveSeat } from "../api";
+import { AsciiTitle } from "../components/AsciiTitle";
 import { navigate } from "../nav";
+
+// Loaded on its own, so only the home page downloads three.js.
+const Sword = lazy(() => import("../components/Sword"));
+
+// "YORM" in the ANSI Shadow figlet font.
+const TITLE = `██╗   ██╗ ██████╗ ██████╗ ███╗   ███╗
+╚██╗ ██╔╝██╔═══██╗██╔══██╗████╗ ████║
+ ╚████╔╝ ██║   ██║██████╔╝██╔████╔██║
+  ╚██╔╝  ██║   ██║██╔══██╗██║╚██╔╝██║
+   ██║   ╚██████╔╝██║  ██║██║ ╚═╝ ██║
+   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝     ╚═╝`;
 
 export function Home() {
   const [name, setName] = useState("");
@@ -24,9 +37,17 @@ export function Home() {
   }
 
   return (
-    <main className="page">
-      <h1>Yorm</h1>
-      <p className="muted">A shared battle grid for your table.</p>
+    <main className="home">
+      <header className="hero">
+        <h1 className="ascii-title">
+          <AsciiTitle art={TITLE} label="Yorm" />
+        </h1>
+        <p className="tagline">a shared battle grid for your table</p>
+        <Suspense fallback={<div className="sword" />}>
+          <Sword />
+        </Suspense>
+      </header>
+      <div className="page">
 
       <form className="card stack" onSubmit={submit}>
         <h2>New session</h2>
@@ -63,6 +84,7 @@ export function Home() {
           </ul>
         </section>
       )}
+      </div>
     </main>
   );
 }

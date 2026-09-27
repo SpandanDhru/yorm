@@ -105,11 +105,10 @@ function OrderRow({ entry, e, game, seat, command }: { entry: InitEntry; e: Enco
         >
           <input
             className="d20"
-            type="number"
-            min={1}
-            max={20}
+            inputMode="numeric"
+            autoComplete="off"
             value={roll}
-            onChange={(ev) => setRoll(ev.target.value)}
+            onChange={(ev) => /^\d{0,2}$/.test(ev.target.value) && setRoll(ev.target.value)}
             placeholder="d20"
             aria-label={`${a.name}'s d20 roll`}
           />

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import type { Seat } from "../api";
 import { canEdit, freeCell, hpFraction, hpLevel, tokenFor } from "../store";
 import type { ActorID, ActorKind, Character, GameState } from "../types";
+import { NumberInput } from "./NumberInput";
 
 type Command = (name: string, args: unknown) => void;
 
@@ -133,11 +134,10 @@ function CharacterCard(p: {
           {editable && (
             <div className="row hp-row">
               <input
-                type="number"
-                min={1}
-                max={9999}
+                inputMode="numeric"
+                autoComplete="off"
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                onChange={(e) => /^\d{0,4}$/.test(e.target.value) && setAmount(e.target.value)}
                 placeholder="Amount"
                 aria-label="HP amount"
               />
@@ -273,7 +273,7 @@ function CharacterForm(p: { initial?: Character; isDM: boolean; game: GameState;
   const num = (k: "level" | "ac" | "speed" | "init_bonus" | "max_hp", label: string, min: number, max: number) => (
     <label>
       {label}
-      <input type="number" min={min} max={max} value={f[k]} onChange={(e) => set(k, Number(e.target.value))} required />
+      <NumberInput min={min} max={max} value={f[k]} onChange={(n) => set(k, n)} required />
     </label>
   );
 
