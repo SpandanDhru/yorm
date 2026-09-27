@@ -16,6 +16,16 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/yormd ./cmd/yormd
 # distroless has no shell to mkdir with, so the upload dir is made here.
 RUN mkdir -p /out/data/uploads
 
+# For Fly.io (fly.toml builds this target): its volumes are owned by root,
+# so this image runs as root to write uploads to one.
+FROM gcr.io/distroless/static-debian12 AS fly
+COPY --from=build /out/yormd /yormd
+COPY --from=web /web/dist /web
+ENV YORM_WEB_DIR=/web YORM_UPLOAD_DIR=/data/uploads
+EXPOSE 8080
+ENTRYPOINT ["/yormd"]
+
+# The default (last) stage, used by Docker Compose: runs as a non-root user.
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/yormd /yormd
 COPY --from=web /web/dist /web

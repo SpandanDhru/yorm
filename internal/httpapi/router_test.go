@@ -186,6 +186,13 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestLivezIgnoresTheDatabase(t *testing.T) {
+	a := newAPI(t, func(context.Context) error { return errors.New("database asleep") })
+	if rec := a.do(httptest.NewRequest(http.MethodGet, "/livez", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
 // The session ID in the path must reach ws.Server: a token for another
 // session is refused before the upgrade.
 func TestWebSocketRouteUsesPathSession(t *testing.T) {
